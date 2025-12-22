@@ -1,0 +1,143 @@
+<div id="content-kr-market">
+    <section class="mb-6">
+        <div class="flex items-center justify-between mb-2">
+            <h2 class="text-sm font-bold text-gray-300" data-i18n-key="title_indices">Market Indices</h2>
+            <span class="text-xs text-gray-500" data-i18n-key="label_real_time">Real-time Data</span>
+        </div>
+        <div id="market-indices-container" class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+            <div
+                class="bg-gray-900 border border-gray-800 rounded-lg p-3 flex flex-col items-center justify-center h-20 animate-pulse">
+                <div class="h-3 w-16 bg-gray-800 rounded mb-2"></div>
+                <div class="h-4 w-20 bg-gray-800 rounded"></div>
+            </div>
+        </div>
+    </section>
+    <div class="grid grid-cols-12 gap-6">
+        <div class="col-span-12 lg:col-span-8 flex flex-col gap-6">
+            <div
+                class="flex-1 min-h-[300px] border border-gray-800 rounded-lg p-4 relative flex flex-col bg-gray-900/50 backdrop-blur-sm">
+                <div class="flex items-center justify-between mb-2 shrink-0">
+                    <div>
+                        <h2 class="text-sm font-bold text-gray-300" data-i18n-key="title_price_chart">Price Chart</h2>
+                        <span id="summary-chart-ticker" class="text-xs text-blue-400 font-mono ml-2"></span>
+                    </div>
+                    <div class="flex items-center gap-1 bg-gray-800 rounded p-0.5 border border-gray-700">
+                        <button onclick="setChartRange('1D')"
+                            class="chart-range-btn px-2 py-0.5 text-[10px] font-medium text-gray-400 hover:text-white hover:bg-[#333] rounded transition-colors"
+                            data-range="1D">1D</button>
+                        <button onclick="setChartRange('1W')"
+                            class="chart-range-btn px-2 py-0.5 text-[10px] font-medium text-gray-400 hover:text-white hover:bg-[#333] rounded transition-colors"
+                            data-range="1W">1W</button>
+                        <button onclick="setChartRange('1M')"
+                            class="chart-range-btn px-2 py-0.5 text-[10px] font-medium text-gray-400 hover:text-white hover:bg-[#333] rounded transition-colors"
+                            data-range="1M">1M</button>
+                        <button onclick="setChartRange('3M')"
+                            class="chart-range-btn px-2 py-0.5 text-[10px] font-medium text-gray-400 hover:text-white hover:bg-[#333] rounded transition-colors"
+                            data-range="3M">3M</button>
+                        <button onclick="setChartRange('6M')"
+                            class="chart-range-btn px-2 py-0.5 text-[10px] font-medium text-gray-400 hover:text-white hover:bg-[#333] rounded transition-colors"
+                            data-range="6M">6M</button>
+                        <button onclick="setChartRange('1Y')"
+                            class="chart-range-btn px-2 py-0.5 text-[10px] font-medium text-white bg-[#333] rounded transition-colors"
+                            data-range="1Y">1Y</button>
+                        <button onclick="setChartRange('5Y')"
+                            class="chart-range-btn px-2 py-0.5 text-[10px] font-medium text-gray-400 hover:text-white hover:bg-[#333] rounded transition-colors"
+                            data-range="5Y">5Y</button>
+                        <button onclick="setChartRange('All')"
+                            class="chart-range-btn px-2 py-0.5 text-[10px] font-medium text-gray-400 hover:text-white hover:bg-[#333] rounded transition-colors"
+                            data-range="All">All</button>
+                    </div>
+                </div>
+                <div id="summary-chart-container" class="flex-1 w-full relative"></div>
+            </div>
+            <div
+                class="flex-1 min-h-[300px] border border-gray-800 rounded-lg p-4 flex flex-col bg-gray-900/50 backdrop-blur-sm">
+                <div class="flex items-center justify-between mb-4 shrink-0">
+                    <h2 class="text-lg font-semibold text-gray-100 flex items-center gap-2"
+                        data-i18n-key="title_ai_reco">AI Recommendations</h2>
+                    <div class="flex items-center gap-4">
+                        <div class="flex items-center gap-2">
+                            <label for="history-date" class="text-gray-400 text-sm"
+                                data-i18n-key="label_date">Date:</label>
+                            <input type="date" id="history-date"
+                                class="bg-gray-800 text-white border border-gray-700 rounded px-3 py-1 text-sm focus:outline-none focus:border-blue-500">
+                            <button onclick="resetDate()" class="text-xs text-gray-500 hover:text-white underline"
+                                data-i18n-key="btn_reset">Reset</button>
+                        </div>
+                        <span class="text-sm text-gray-400"><span data-i18n-key="label_update_interval">Update
+                                Interval</span>: <span class="text-blue-400 font-mono">20s</span></span>
+                    </div>
+                </div>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left border-collapse">
+                        <thead>
+                            <tr class="text-xs text-gray-400 border-b border-gray-800">
+                                <th class="py-3 text-left font-semibold text-gray-400">Ticker</th>
+                                <th class="py-3 text-left font-semibold text-gray-400">Name</th>
+                                <th class="py-3 text-left font-semibold text-gray-400">Rec. Price</th>
+                                <th class="py-3 text-left font-semibold text-gray-400">Price</th>
+                                <th class="py-3 text-left font-semibold text-gray-400">Return</th>
+                                <th class="py-3 text-center font-semibold text-gray-400">AI Score</th>
+                                <th class="py-3 text-center font-semibold text-gray-400">Grade</th>
+                                <th class="py-3 text-center font-semibold text-gray-400">Wave Stage</th>
+                                <th class="py-3 text-center font-semibold text-gray-400">S/D Stage</th>
+                                <th class="py-3 text-center font-semibold text-gray-400">Inst. Trend</th>
+                                <th class="py-3 text-center font-semibold text-gray-400">YTD</th>
+                            </tr>
+                        </thead>
+                        <tbody id="holdings-table-body" class="divide-y divide-gray-700"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+        <div class="col-span-12 lg:col-span-4 flex flex-col gap-6">
+            <div class="h-full border border-gray-800 rounded-lg p-4 flex flex-col bg-gray-900/50 backdrop-blur-sm">
+                <div class="flex items-center justify-between mb-4 shrink-0">
+                    <h2 class="text-sm font-bold text-gray-300">Style Box</h2>
+                    <button class="text-xs text-gray-500 hover:text-white flex items-center gap-1"><i
+                            class="fas fa-download"></i> DOWNLOAD</button>
+                </div>
+                <div class="flex gap-1 mb-4 bg-gray-800 p-1 rounded w-max">
+                    <button onclick="switchTab('summary')" id="tab-summary"
+                        class="tab-btn active text-sm font-medium text-white border-b-2 border-blue-500 pb-2 px-1">Summary</button>
+                    <button onclick="switchTab('analysis')" id="tab-analysis"
+                        class="tab-btn text-sm font-medium text-gray-400 hover:text-white border-b-2 border-transparent pb-2 px-1 transition-colors">Analysis</button>
+                    <button
+                        class="tab-btn text-sm font-medium text-gray-400 hover:text-white border-b-2 border-transparent pb-2 px-1 transition-colors">Exposure</button>
+                </div>
+                <div class="flex-1 flex flex-col">
+                    <div class="flex text-xs text-gray-500 mb-1 text-center font-medium">
+                        <div class="w-8"></div>
+                        <div class="flex-1">Value</div>
+                        <div class="flex-1">Core</div>
+                        <div class="flex-1">Growth</div>
+                    </div>
+                    <div class="flex-1 flex gap-1">
+                        <div class="w-8 flex flex-col justify-between text-xs text-gray-500 font-medium py-4">
+                            <div class="flex-1 flex items-center justify-start">Large</div>
+                            <div class="flex-1 flex items-center justify-start">Mid</div>
+                            <div class="flex-1 flex items-center justify-start">Small</div>
+                        </div>
+                        <div class="flex-1 flex flex-col gap-1 h-[300px]">
+                            <div class="flex-1 flex gap-1">
+                                <div id="sb-large-value" class="flex-1 style-box-cell bg-[#9dcba3]">--%</div>
+                                <div id="sb-large-core" class="flex-1 style-box-cell bg-[#86bf8e]">--%</div>
+                                <div id="sb-large-growth" class="flex-1 style-box-cell bg-[#b4d7b8]">--%</div>
+                            </div>
+                            <div class="flex-1 flex gap-1">
+                                <div id="sb-mid-value" class="flex-1 style-box-cell bg-[#cce4ce]">--%</div>
+                                <div id="sb-mid-core" class="flex-1 style-box-cell bg-[#b4d7b8]">--%</div>
+                                <div id="sb-mid-growth" class="flex-1 style-box-cell bg-[#dcecd0]">--%</div>
+                            </div>
+                            <div class="flex-1 flex gap-1">
+                                <div id="sb-small-value" class="flex-1 style-box-cell bg-[#dcecd0]">--%</div>
+                                <div id="sb-small-core" class="flex-1 style-box-cell bg-[#dcecd0]">--%</div>
+                                <div id="sb-small-growth" class="flex-1 style-box-cell bg-[#dcecd0]">--%</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>

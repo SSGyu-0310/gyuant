@@ -1,0 +1,353 @@
+<script>
+    function renderUSSmartMoneyPicks(data) {
+        const table = document.getElementById('us-smart-money-table');
+        const summary = document.getElementById('us-smart-money-summary');
+        if (!table) return;
+        table.innerHTML = '';
+
+        const picks = safeArray(data.top_picks);
+        window.usSmartMoneyPicks = picks;
+
+        if (summary) {
+            const analysisDate = data.analysis_date || '';
+            const avgScore = data.summary?.avg_score || 0;
+            summary.textContent = analysisDate ? `${t('updated')} ${analysisDate} | Avg Score: ${avgScore}` : `Avg Score: ${avgScore}`;
+        }
+
+        if (!picks.length) {
+            // Show empty state with CTA
+            if (typeof renderEmptyStateWithCTA === 'function') {
+                renderEmptyStateWithCTA(table, t('empty_generic'));
+            } else {
+                const row = document.createElement('tr');
+                const td = document.createElement('td');
+                td.colSpan = 9;
+                td.className = 'p-4 text-center text-gray-500';
+                td.textContent = t('empty_generic');
+                row.appendChild(td);
+                table.appendChild(row);
+            }
+            return;
+        }
+
+        picks.forEach((pick, idx) => {
+            const tr = document.createElement('tr');
+            tr.className = 'border-b border-[#2a2a2a] hover:bg-[#252525] cursor-pointer text-xs';
+            tr.dataset.ticker = pick.ticker;
+            tr.dataset.idx = idx;
+
+            const change = pick.change_since_rec || 0;
+            const changeClass = change >= 0 ? 'text-green-400' : 'text-red-400';
+            const changePrefix = change >= 0 ? '+' : '';
+            const changeArrow = change > 0 ? '▲' : change < 0 ? '▼' : '';
+            const score = pick.final_score || pick.composite_score || 0;
+
+            // Heatmap-style score color
+            const scoreColor = typeof formatScoreColor === 'function'
+                ? formatScoreColor(score)
+                : 'bg-blue-600/20 text-blue-300';
+
+            const aiRec = pick.ai_recommendation || 'Analyzing';
+            const recIcon = aiRec.includes('Strong') ? '⭐' : aiRec.includes('Buy') ? '✓' : '-';
+            const recClass = aiRec.includes('Strong') ? 'text-yellow-400' : aiRec.includes('Buy') ? 'text-green-400' : 'text-gray-500';
+
+            const priceAtRec = pick.price_at_rec || pick.price_at_analysis || pick.current_price || 0;
+            const currentPrice = pick.current_price || priceAtRec;
+            const targetUpside = pick.target_upside || 0;
+            const upsideClass = targetUpside > 0 ? 'text-green-400' : targetUpside < 0 ? 'text-red-400' : 'text-gray-400';
+
+            tr.innerHTML = `
+                <td class="p-2 text-gray-500 font-mono">${pick.rank || idx + 1}</td>
+                <td class="p-2">
+                    <div class="flex flex-col">
+                        <span class="text-white font-bold">${pick.ticker}</span>
+                        <span class="text-gray-500 text-[10px] truncate max-w-[100px]">${pick.name || ''}</span>
+                    </div>
+                </td>
+                <td class="p-2 text-center text-gray-400 text-[10px] hidden md:table-cell">${pick.sector || '-'}</td>
+                <td class="p-2 text-center">
+                    <span class="px-2 py-1 rounded-full font-bold ${scoreColor}">${score}</span>
+                </td>
+                <td class="p-2 text-center ${recClass}" title="${aiRec}">${recIcon}</td>
+                <td class="p-2 text-center text-gray-500 hidden md:table-cell">$${Number(priceAtRec).toFixed(2)}</td>
+                <td class="p-2 text-center text-white font-bold">$${Number(currentPrice).toFixed(2)}</td>
+                <td class="p-2 text-center ${changeClass} font-bold">
+                    ${changeArrow} ${changePrefix}${Number(change).toFixed(2)}%
+                </td>
+                <td class="p-2 text-center ${upsideClass} font-medium">
+                    ${targetUpside ? (targetUpside > 0 ? '+' : '') + Number(targetUpside).toFixed(1) + '%' : '-'}
+                </td>
+            `;
+
+            tr.addEventListener('click', () => {
+                selectTicker(pick, idx);
+            });
+            table.appendChild(tr);
+        });
+
+        // Auto-select first stock on initial load
+        if (picks[0]) {
+            selectTicker(picks[0], 0);
+        }
+    }
+
+    // ============================================================
+    // Unified Ticker Selection - Updates Chart, AI Summary, and Drawer
+    // ============================================================
+    function selectTicker(pick, idx) {
+        // Highlight selected row
+        document.querySelectorAll('#us-smart-money-table tr').forEach(tr => tr.classList.remove('bg-[#2a2a2a]'));
+        if (idx >= 0) {
+            document.querySelector(`#us-smart-money-table tr[data-idx="${idx}"]`)?.classList.add('bg-[#2a2a2a]');
+        }
+
+        // Load chart (which also loads AI summary internally)
+        loadUSStockChart(pick, idx);
+
+        // Open ticker drawer if available
+        if (window.openTickerDrawer) {
+            window.openTickerDrawer(pick.ticker);
+        }
+    }
+
+    // Expose for external use
+    window.selectTicker = selectTicker;
+
+    function populateUSHistoryDates(dates) {
+        const select = document.getElementById('us-history-date-select');
+        if (!select) return;
+        select.innerHTML = '<option value="">' + t('option_latest') + '</option>';
+        dates.forEach(date => {
+            const option = document.createElement('option');
+            option.value = date;
+            option.textContent = date;
+            select.appendChild(option);
+        });
+    }
+
+    async function loadUSHistoryByDate(date) {
+        if (!date) {
+            updateUSMarketDashboard();
+            return;
+        }
+        try {
+            const response = await fetchWithRetry(`/api/us/history/${date}`, {}, { retries: 1, backoffMs: 300, timeoutMs: 8000 });
+            if (!response.ok || response.data?.error) {
+                alert(response.error?.message || response.data?.error || 'Failed to load history');
+                return;
+            }
+            const data = response.data;
+            const summary = document.getElementById('us-smart-money-summary');
+            if (summary && data.summary) {
+                const perf = data.summary.avg_performance || 0;
+                const perfClass = perf >= 0 ? 'text-green-400' : 'text-red-400';
+                summary.innerHTML = `<span class="text-purple-400">${t('updated')} ${date}</span> | <span class="${perfClass}">Avg Perf: ${perf}%</span>`;
+            }
+            renderUSSmartMoneyPicks(data);
+        } catch (e) {
+            console.error('Error loading history:', e);
+        }
+    }
+
+    let usStockChart = null;
+    let currentChartPick = null;
+    let currentChartPeriod = '1y';
+
+    document.getElementById('us-chart-period-btns')?.addEventListener('click', (e) => {
+        if (e.target.tagName === 'BUTTON') {
+            const period = e.target.dataset.period;
+            currentChartPeriod = period;
+            document.querySelectorAll('#us-chart-period-btns button').forEach(btn => {
+                btn.className = 'px-2 py-1 text-xs rounded bg-gray-700 text-gray-300 hover:bg-blue-600 hover:text-white transition-colors';
+            });
+            e.target.className = 'px-2 py-1 text-xs rounded bg-blue-600 text-white';
+            if (currentChartPick) {
+                loadUSStockChart(currentChartPick, -1, period);
+            }
+        }
+    });
+
+    async function loadUSStockChart(pick, idx, period = null) {
+        const chartContainer = document.getElementById('us-stock-chart');
+        if (!chartContainer) return;
+
+        currentChartPick = pick;
+        const usePeriod = period || currentChartPeriod;
+
+        document.getElementById('us-chart-ticker').textContent = pick.ticker;
+        document.getElementById('us-chart-info').textContent = `${pick.name || pick.ticker} | Score: ${pick.final_score || 0}/100`;
+
+        if (idx >= 0) {
+            document.querySelectorAll('#us-smart-money-table tr').forEach(tr => tr.classList.remove('bg-[#2a2a2a]'));
+            document.querySelector(`#us-smart-money-table tr[data-idx="${idx}"]`)?.classList.add('bg-[#2a2a2a]');
+        }
+
+        try {
+            chartContainer.innerHTML = '<div class="flex items-center justify-center h-full text-gray-500"><i class="fas fa-spinner fa-spin text-2xl"></i></div>';
+            const response = await fetchWithRetry(`/api/us/stock-chart/${pick.ticker}?period=${usePeriod}`, {}, { retries: 1, backoffMs: 300, timeoutMs: 8000 });
+            if (!response.ok || response.data?.error) throw new Error(response.error?.message || response.data?.error || 'chart');
+            const data = response.data;
+
+            chartContainer.innerHTML = '';
+            if (usStockChart) usStockChart.remove();
+
+            usStockChart = LightweightCharts.createChart(chartContainer, {
+                width: chartContainer.clientWidth,
+                height: 300,
+                layout: { background: { color: '#1a1a1a' }, textColor: '#999' },
+                grid: { vertLines: { color: '#2a2a2a' }, horzLines: { color: '#2a2a2a' } },
+                timeScale: { borderColor: '#2a2a2a', timeVisible: true },
+                rightPriceScale: { borderColor: '#2a2a2a' },
+            });
+
+            const candleSeries = usStockChart.addCandlestickSeries({
+                upColor: '#22c55e', downColor: '#ef4444', borderUpColor: '#22c55e', borderDownColor: '#ef4444', wickUpColor: '#22c55e',
+                wickDownColor: '#ef4444'
+            });
+            candleSeries.setData(data.candles);
+            usStockChart.timeScale().fitContent();
+
+            indicatorData = null;
+            bbUpperSeries = null; bbMiddleSeries = null; bbLowerSeries = null; srLines = [];
+            if (indicatorState.bb || indicatorState.sr || indicatorState.rsi || indicatorState.macd) {
+                loadTechnicalIndicators(pick.ticker, usePeriod).then(() => {
+                    if (indicatorState.bb) renderBollingerBands();
+                    if (indicatorState.sr) renderSupportResistance();
+                    if (indicatorState.rsi) renderRSI();
+                    if (indicatorState.macd) renderMACD();
+                });
+            }
+
+            loadUSAISummary(pick.ticker);
+        } catch (e) {
+            chartContainer.innerHTML = `<div class="flex items-center justify-center h-full text-gray-500">${t('fail_chart')}</div>`;
+        }
+    }
+
+    let indicatorState = { bb: false, sr: false, rsi: false, macd: false };
+    let indicatorData = null;
+    let bbUpperSeries, bbMiddleSeries, bbLowerSeries;
+    let srLines = [];
+    let rsiChart, rsiSeries;
+    let macdChart, macdLineSeries, macdSignalSeries, macdHistSeries;
+
+    async function loadTechnicalIndicators(ticker, period = '1y') {
+        try {
+            const response = await fetchWithRetry(`/api/us/technical-indicators/${ticker}?period=${period}`, {}, { retries: 1, backoffMs: 300, timeoutMs: 8000 });
+            if (response.ok) indicatorData = response.data;
+        } catch (e) { console.error(e); }
+    }
+
+    function toggleIndicator(type) {
+        indicatorState[type] = !indicatorState[type];
+        const btn = document.getElementById(`toggle-${type}`);
+        btn.classList.toggle('bg-purple-600', indicatorState[type]);
+        btn.classList.toggle('text-white', indicatorState[type]);
+        btn.classList.toggle('bg-gray-700', !indicatorState[type]);
+
+        if (!indicatorData && currentChartPick) {
+            loadTechnicalIndicators(currentChartPick.ticker, currentChartPeriod).then(() => renderIndicator(type));
+        } else {
+            renderIndicator(type);
+        }
+    }
+
+    function renderIndicator(type) {
+        if (!indicatorData || !usStockChart) return;
+        if (type === 'bb') renderBollingerBands();
+        else if (type === 'sr') renderSupportResistance();
+        else if (type === 'rsi') renderRSI();
+        else if (type === 'macd') renderMACD();
+    }
+
+    function renderBollingerBands() {
+        if (bbUpperSeries) { usStockChart.removeSeries(bbUpperSeries); bbUpperSeries = null; }
+        if (bbMiddleSeries) { usStockChart.removeSeries(bbMiddleSeries); bbMiddleSeries = null; }
+        if (bbLowerSeries) { usStockChart.removeSeries(bbLowerSeries); bbLowerSeries = null; }
+        if (!indicatorState.bb || !indicatorData?.bollinger) return;
+
+        bbUpperSeries = usStockChart.addLineSeries({ color: 'rgba(147, 51, 234, 0.5)', lineWidth: 1 });
+        bbMiddleSeries = usStockChart.addLineSeries({ color: 'rgba(147, 51, 234, 0.8)', lineWidth: 1, lineStyle: 2 });
+        bbLowerSeries = usStockChart.addLineSeries({ color: 'rgba(147, 51, 234, 0.5)', lineWidth: 1 });
+
+        bbUpperSeries.setData(indicatorData.bollinger.upper);
+        bbMiddleSeries.setData(indicatorData.bollinger.middle);
+        bbLowerSeries.setData(indicatorData.bollinger.lower);
+    }
+
+    function renderSupportResistance() {
+        srLines.forEach(l => usStockChart.removeSeries(l)); srLines = [];
+        if (!indicatorState.sr || !indicatorData?.support_resistance) return;
+        const sr = indicatorData.support_resistance;
+        const timeStart = indicatorData.rsi?.[0]?.time;
+        const timeEnd = indicatorData.rsi?.[indicatorData.rsi.length - 1]?.time;
+        sr.support?.forEach(level => {
+            const line = usStockChart.addLineSeries({ color: '#22c55e', lineWidth: 1, lineStyle: 2, priceLineVisible: true });
+            if (timeStart && timeEnd) line.setData([{ time: timeStart, value: level }, { time: timeEnd, value: level }]);
+            srLines.push(line);
+        });
+        sr.resistance?.forEach(level => {
+            const line = usStockChart.addLineSeries({ color: '#ef4444', lineWidth: 1, lineStyle: 2, priceLineVisible: true });
+            if (timeStart && timeEnd) line.setData([{ time: timeStart, value: level }, { time: timeEnd, value: level }]);
+            srLines.push(line);
+        });
+    }
+
+    function renderRSI() {
+        const container = document.getElementById('us-rsi-chart');
+        if (!indicatorState.rsi) {
+            container.classList.add('hidden');
+            if (rsiChart) { rsiChart.remove(); rsiChart = null; }
+            return;
+        }
+
+        container.classList.remove('hidden');
+        container.innerHTML = '';
+        rsiChart = LightweightCharts.createChart(container, {
+            width: container.clientWidth,
+            height: 80,
+            layout: { background: { color: '#1a1a1a' }, textColor: '#666' },
+            grid: { vertLines: { color: '#2a2a2a' }, horzLines: { color: '#2a2a2a' } },
+            timeScale: { visible: false }
+        });
+        rsiSeries = rsiChart.addLineSeries({ color: '#22c55e', lineWidth: 1 });
+        rsiSeries.setData(indicatorData.rsi || []);
+        const ov = rsiChart.addLineSeries({ color: '#ef4444', lineStyle: 2 });
+        const os = rsiChart.addLineSeries({ color: '#22c55e', lineStyle: 2 });
+        if (indicatorData.rsi?.length) {
+            const t0 = indicatorData.rsi[0].time, t1 = indicatorData.rsi[indicatorData.rsi.length - 1].time;
+            ov.setData([{ time: t0, value: 70 }, { time: t1, value: 70 }]);
+            os.setData([{ time: t0, value: 30 }, { time: t1, value: 30 }]);
+        }
+        rsiChart.timeScale().fitContent();
+    }
+
+    function renderMACD() {
+        const container = document.getElementById('us-macd-chart');
+        if (!indicatorState.macd) {
+            container.classList.add('hidden');
+            if (macdChart) { macdChart.remove(); macdChart = null; }
+            return;
+        }
+
+        container.classList.remove('hidden');
+        container.innerHTML = '';
+        macdChart = LightweightCharts.createChart(container, {
+            width: container.clientWidth,
+            height: 80,
+            layout: { background: { color: '#1a1a1a' }, textColor: '#666' },
+            grid: { vertLines: { color: '#2a2a2a' }, horzLines: { color: '#2a2a2a' } },
+            timeScale: { visible: false }
+        });
+
+        macdLineSeries = macdChart.addLineSeries({ color: '#3b82f6', lineWidth: 1 });
+        macdSignalSeries = macdChart.addLineSeries({ color: '#f59e0b', lineWidth: 1 });
+        macdHistSeries = macdChart.addHistogramSeries({ color: '#22c55e' });
+
+        macdLineSeries.setData(indicatorData.macd?.line || []);
+        macdSignalSeries.setData(indicatorData.macd?.signal || []);
+        const histData = (indicatorData.macd?.hist || []).map(d => ({ time: d.time, value: d.value, color: d.value >= 0 ? '#22c55e' : '#ef4444' }));
+        macdHistSeries.setData(histData);
+        macdChart.timeScale().fitContent();
+    }
+</script>

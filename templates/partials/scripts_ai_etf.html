@@ -1,0 +1,208 @@
+﻿<script>
+    const AI_SUMMARY_REGEN_COOLDOWN_SEC = 30;
+    let aiCooldownTimer = null;
+    let aiCooldownUntil = 0;
+    let aiCurrentTicker = null;
+
+    function setAICooldown(seconds) {
+        const btn = document.getElementById('us-ai-regen');
+        if (!btn) return;
+        if (aiCooldownTimer) {
+            clearInterval(aiCooldownTimer);
+            aiCooldownTimer = null;
+        }
+        if (seconds <= 0) {
+            aiCooldownUntil = 0;
+            btn.disabled = false;
+            btn.textContent = t('btn_regen');
+            return;
+        }
+        aiCooldownUntil = Date.now() + seconds * 1000;
+        let remain = seconds;
+        btn.disabled = true;
+        btn.textContent = `${t('btn_regen')} (${remain}s)`;
+        aiCooldownTimer = setInterval(() => {
+            remain = Math.max(0, Math.ceil((aiCooldownUntil - Date.now()) / 1000));
+            btn.textContent = `${t('btn_regen')} (${remain}s)`;
+            if (remain <= 0) {
+                clearInterval(aiCooldownTimer);
+                aiCooldownTimer = null;
+                btn.disabled = false;
+                btn.textContent = t('btn_regen');
+            }
+        }, 500);
+    }
+
+    async function loadUSAISummary(ticker, opts = {}) {
+        const summaryEl = document.getElementById('us-ai-summary');
+        const updatedEl = document.getElementById('us-ai-updated');
+        if (!summaryEl) return;
+        aiCurrentTicker = ticker;
+
+        // Show skeleton UI for AI summary loading
+        if (typeof getSkeletonHTML === 'function') {
+            summaryEl.innerHTML = getSkeletonHTML('text', 1);
+        } else {
+            summaryEl.innerHTML = `<span class="text-gray-500"><i class="fas fa-spinner fa-spin"></i> ${t('loading_ai')}</span>`;
+        }
+
+        let res;
+        try {
+            const force = !!opts.force;
+            res = await fetchWithRetry(`/api/us/ai-summary/${ticker}?lang=${currentLang}${force ? '&force=1' : ''}`, {}, { retries: force ? 0 : 1, backoffMs: 400, timeoutMs: 7000 });
+            if (!res.ok) throw new Error(res.error?.message || 'AI summary unavailable');
+            const data = res.data;
+            if (!data || !data.summary) throw new Error('No AI summary');
+
+            let htmlSummary = data.summary
+                .replace(/## (.*)/g, '<strong class="text-white block mb-1">$1</strong>')
+                .replace(/\*\*(.*?)\*\*/g, '<strong class="text-white">$1</strong>')
+                .replace(/\n/g, '<br>');
+            summaryEl.innerHTML = htmlSummary;
+
+            if (updatedEl && data.updated) {
+                const cachedBadge = data.meta?.cached ? ` (${t('label_cached')})` : '';
+                const truncatedBadge = data.meta?.truncated ? ' (truncated)' : '';
+                updatedEl.textContent = `${t('updated')}: ${new Date(data.updated).toLocaleString()}${cachedBadge}${truncatedBadge}`;
+            }
+            const cacheBadge = document.getElementById('us-ai-cache-badge');
+            if (cacheBadge) {
+                cacheBadge.textContent = data.meta?.cached ? t('label_cached') : t('label_generated');
+            }
+            const regenBtn = document.getElementById('us-ai-regen');
+            if (regenBtn) {
+                regenBtn.disabled = false;
+                regenBtn.textContent = t('btn_regen');
+            }
+        } catch (e) {
+            const retryAfter = res?.error?.body?.retry_after_sec;
+            if (res?.error?.status === 429 && retryAfter) {
+                setAICooldown(retryAfter);
+            }
+            summaryEl.innerHTML = `<span class="text-gray-500">${t('ai_unavailable')}</span>`;
+            const cacheBadge = document.getElementById('us-ai-cache-badge');
+            if (cacheBadge) cacheBadge.textContent = '';
+        }
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+        const regenBtn = document.getElementById('us-ai-regen');
+        if (regenBtn) {
+            regenBtn.textContent = t('btn_regen');
+            regenBtn.addEventListener('click', () => {
+                if (regenBtn.disabled || !aiCurrentTicker) return;
+                setAICooldown(AI_SUMMARY_REGEN_COOLDOWN_SEC || 30);
+                loadUSAISummary(aiCurrentTicker, { force: true });
+            });
+        }
+    });
+
+    function renderUSETFFlows(data) {
+        const inflows = document.getElementById('us-etf-inflows');
+        const outflows = document.getElementById('us-etf-outflows');
+        const sentiment = document.getElementById('us-etf-sentiment');
+
+        if (sentiment && data?.market_sentiment_score !== undefined) {
+            const s = data.market_sentiment_score;
+            sentiment.textContent = `${s >= 60 ? 'Bullish' : s <= 40 ? 'Bearish' : 'Neutral'} (${s})`;
+            sentiment.className = `text-xs px-2 py-1 rounded ${s >= 60 ? 'bg-green-600' : s <= 40 ? 'bg-red-600' : 'bg-gray-600'} text-white`;
+        }
+
+        if (inflows) {
+            inflows.innerHTML = '';
+            const inflowData = safeArray(data?.top_inflows);
+            if (!inflowData.length) {
+                if (typeof renderEmptyStateWithCTA === 'function') {
+                    renderEmptyStateWithCTA(inflows, t('empty_generic'));
+                } else {
+                    inflows.appendChild(renderStateBlock('empty', t('empty_generic')));
+                }
+            } else {
+                inflowData.forEach(etf => {
+                    const flowScore = Number(etf.flow_score) || 0;
+                    const barWidth = Math.min(flowScore, 100);
+                    const div = document.createElement('div');
+                    div.className = 'border border-gray-800 rounded-lg p-2 mb-2 bg-[#111] hover:bg-[#1a1a1a] transition-colors';
+                    div.innerHTML = `
+                        <div class="flex justify-between items-center mb-1">
+                            <span class="text-white font-bold text-sm">${etf.ticker}</span>
+                            <span class="text-green-400 font-bold text-sm">▲ ${flowScore}</span>
+                        </div>
+                        <div class="w-full h-1.5 bg-gray-800 rounded-full overflow-hidden">
+                            <div class="h-full bg-gradient-to-r from-green-600 to-green-400 rounded-full transition-all duration-300" style="width: ${barWidth}%"></div>
+                        </div>
+                        <div class="flex justify-between mt-1 text-[10px] text-gray-500">
+                            <span>${etf.name || etf.category || ''}</span>
+                            <span>${etf.flow_status || ''}</span>
+                        </div>
+                    `;
+                    inflows.appendChild(div);
+                });
+            }
+        }
+
+        if (outflows) {
+            outflows.innerHTML = '';
+            const outflowData = safeArray(data?.top_outflows);
+            if (!outflowData.length) {
+                if (typeof renderEmptyStateWithCTA === 'function') {
+                    renderEmptyStateWithCTA(outflows, t('empty_generic'));
+                } else {
+                    outflows.appendChild(renderStateBlock('empty', t('empty_generic')));
+                }
+            } else {
+                outflowData.forEach(etf => {
+                    const flowScore = Number(etf.flow_score) || 0;
+                    const barWidth = Math.min(100 - flowScore, 100);
+                    const div = document.createElement('div');
+                    div.className = 'border border-gray-800 rounded-lg p-2 mb-2 bg-[#111] hover:bg-[#1a1a1a] transition-colors';
+                    div.innerHTML = `
+                        <div class="flex justify-between items-center mb-1">
+                            <span class="text-white font-bold text-sm">${etf.ticker}</span>
+                            <span class="text-red-400 font-bold text-sm">▼ ${flowScore}</span>
+                        </div>
+                        <div class="w-full h-1.5 bg-gray-800 rounded-full overflow-hidden">
+                            <div class="h-full bg-gradient-to-r from-red-600 to-red-400 rounded-full transition-all duration-300" style="width: ${barWidth}%"></div>
+                        </div>
+                        <div class="flex justify-between mt-1 text-[10px] text-gray-500">
+                            <span>${etf.name || etf.category || ''}</span>
+                            <span>${etf.flow_status || ''}</span>
+                        </div>
+                    `;
+                    outflows.appendChild(div);
+                });
+            }
+        }
+
+        const aiBtn = document.getElementById('us-etf-ai-btn');
+        if (data?.ai_analysis && aiBtn) {
+            aiBtn.classList.remove('hidden');
+            const newBtn = aiBtn.cloneNode(true);
+            aiBtn.parentNode.replaceChild(newBtn, aiBtn);
+            newBtn.addEventListener('click', () => {
+                document.getElementById('us-etf-ai-container').classList.toggle('hidden');
+                document.getElementById('us-etf-ai-content').textContent = data.ai_analysis;
+            });
+        }
+    }
+
+    function renderUSMarketIndices(indices) {
+        const container = document.getElementById('us-market-indices-container');
+        if (!container) return;
+        container.innerHTML = '';
+        const list = safeArray(indices);
+        if (!list.length) {
+            container.appendChild(renderStateBlock('empty', t('no_index_data')));
+            return;
+        }
+        list.forEach(idx => {
+            const colorClass = idx.color === 'green' ? 'text-[#00E396]' : (idx.color === 'red' ? 'text-[#FF4560]' : 'text-gray-400');
+            container.innerHTML += `
+            <div class="bg-[#1a1a1a] border border-[#2a2a2a] rounded p-3 flex flex-col items-center justify-center hover:bg-[#252525] transition-colors">
+                <span class="text-xs text-gray-400 mb-1">${idx.name}</span>
+                <span class="text-lg font-bold text-white mb-1">${idx.price}</span>
+                <span class="text-xs font-medium ${colorClass}">${idx.change} (${Number(idx.change_pct || 0).toFixed(2)}%)</span>
+            </div>`;
+        });
+    }
+</script>

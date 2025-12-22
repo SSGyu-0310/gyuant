@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="ko">
+{% include 'partials/head.html' %}
+
+<body class="flex flex-col h-screen w-screen text-sm bg-[#121212]">
+    {% include 'partials/header.html' %}
+
+    <main class="flex-1 overflow-y-auto overflow-x-hidden relative p-4 custom-scrollbar">
+        <div id="stale-banner"
+            class="hidden mb-2 px-3 py-2 rounded border border-yellow-600 bg-yellow-900/30 text-yellow-200 text-sm">
+        </div>
+        {% include 'partials/content_kr.html' %}
+        {% include 'partials/content_us.html' %}
+        {% include 'partials/content_cals.html' %}
+    </main>
+
+    <!-- Scripts -->
+    {% include 'partials/scripts_base.html' %}
+    {% include 'partials/scripts_us_fetch.html' %}
+    {% include 'partials/scripts_us_charts.html' %}
+    {% include 'partials/scripts_ai_etf.html' %}
+    {% include 'partials/scripts_kr.html' %}
+
+    <!-- Ticker Drawer -->
+    <div id="ticker-drawer"
+        class="fixed inset-y-0 right-0 z-50 transform transition-transform duration-300 translate-x-full pointer-events-none">
+        <div
+            class="h-full w-[380px] bg-[#111827]/95 backdrop-blur-md border-l border-gray-800 shadow-2xl flex flex-col pointer-events-auto">
+            <div class="flex items-center justify-between px-4 py-3 border-b border-gray-800/50">
+                <div>
+                    <div id="td-title" class="text-lg font-bold text-white">-</div>
+                    <div id="td-updated" class="text-[11px] text-gray-400"></div>
+                </div>
+                <div class="flex items-center gap-2">
+                    <a id="td-full-link" class="text-xs text-blue-400 hover:text-blue-300 transition-colors"
+                        href="#">Open full</a>
+                    <button onclick="toggleTickerDrawer()"
+                        class="text-gray-400 hover:text-white transition-colors p-1"><i
+                            class="fas fa-times"></i></button>
+                </div>
+            </div>
+            <div class="flex-1 overflow-y-auto custom-scrollbar p-4 space-y-4">
+                <div>
+                    <div class="flex items-center justify-between mb-2">
+                        <h4 class="text-xs font-bold text-gray-400 uppercase tracking-wider">AI Summary</h4>
+                    </div>
+                    <div id="td-ai-summary"
+                        class="text-xs text-gray-300 bg-gray-900/50 border border-gray-800 rounded p-3 min-h-[80px] leading-relaxed">
+                    </div>
+                    <div id="td-ai-updated" class="text-[10px] text-gray-500 mt-1 text-right"></div>
+                </div>
+                <div>
+                    <div class="flex items-center justify-between mb-2">
+                        <h4 class="text-xs font-bold text-gray-400 uppercase tracking-wider">Unusual Trades</h4>
+                        <button id="td-unusual-refresh"
+                            class="text-[10px] px-2 py-0.5 rounded bg-gray-800 border border-gray-700 text-gray-300 hover:bg-gray-700 transition-colors">Refresh</button>
+                    </div>
+                    <div id="td-unusual-list" class="space-y-2"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Floating Toggle Button for Drawer (Visible when drawer is closed but a ticker is selected/active) -->
+    <button id="drawer-toggle-btn" onclick="toggleTickerDrawer()"
+        class="hidden fixed bottom-6 right-6 z-40 bg-blue-600 hover:bg-blue-500 text-white p-3 rounded-full shadow-lg transition-all transform hover:scale-105">
+        <i class="fas fa-list-ul"></i>
+    </button>
+</body>
+
+</html>

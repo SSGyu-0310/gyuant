@@ -1,0 +1,457 @@
+<script>
+    const messages = {
+        ko: {
+            loading: '불러오는 중...',
+            loading_smart: '스마트머니 데이터를 불러오는 중...',
+            loading_etf: 'ETF 데이터를 불러오는 중...',
+            loading_macro: '매크로 지표를 불러오는 중...',
+            loading_options: '옵션 흐름을 불러오는 중...',
+            loading_calendar: '경제 캘린더 불러오는 중...',
+            loading_indices: '지수 데이터를 불러오는 중...',
+            loading_ai: 'AI 분석을 불러오는 중...',
+            empty_generic: '데이터 없음',
+            error_generic: '데이터를 불러올 수 없습니다',
+            retry: '재시도',
+            updated: '업데이트',
+            stale_banner: '데이터가 오래되었거나 누락됨',
+            tab_kr: '국내 시장',
+            tab_us: '미국 시장',
+            tab_calendar: '경제 캘린더',
+            tab_risk: '리스크',
+            tab_holdings: '보유 매트릭스',
+            title_kr_market: '국내 시장',
+            title_us_market: '미국 시장',
+            search_placeholder: '이름, 티커 또는 기능 검색 (/)',
+            title_indices: '시장 지수',
+            title_us_indices: '미국 주요 지수',
+            label_real_time: '실시간 데이터',
+            title_smart_money: '스마트머니 픽',
+            option_latest: '최신 분석',
+            btn_refresh: '새로고침',
+            title_etf_flows: 'ETF 자금 흐름 (Top3)',
+            label_inflows: '유입',
+            label_outflows: '유출',
+            ai_etf_insight: 'AI ETF 인사이트',
+            title_ai_summary: 'AI 투자 요약',
+            title_sector_perf: '섹터 퍼포먼스',
+            title_options_flow: '옵션 흐름 (스마트머니)',
+            title_macro: '글로벌 매크로 지표',
+            title_macro_outlook: 'AI 시장 전망',
+            title_calendar: '경제 캘린더',
+            btn_expand_all: '모두 펼치기',
+            btn_collapse_all: '모두 접기',
+            ai_unavailable: '분석을 표시할 수 없습니다.',
+            ai_select_hint: '종목을 선택하면 AI 분석이 표시됩니다.',
+            no_index_data: '지수 데이터 없음',
+            no_options: '옵션 데이터 없음',
+            calendar_no_events: '이번 주 주요 일정이 없습니다.',
+            fail_chart: '차트를 불러올 수 없습니다',
+            title_price_chart: '가격 차트',
+            title_ai_reco: 'AI 추천',
+            label_date: '날짜',
+            btn_reset: '초기화',
+            label_update_interval: '업데이트 주기',
+            btn_regen: '재생성',
+            label_cached: '캐시됨',
+            label_generated: '생성',
+        },
+        en: {
+            loading: 'Loading...',
+            loading_smart: 'Loading Smart Money...',
+            loading_etf: 'Loading ETF data...',
+            loading_macro: 'Loading macro data...',
+            loading_options: 'Loading options data...',
+            loading_calendar: 'Loading calendar...',
+            loading_indices: 'Loading indices...',
+            loading_ai: 'Loading AI analysis...',
+            empty_generic: 'No data',
+            error_generic: 'Failed to load data',
+            retry: 'Retry',
+            updated: 'Updated',
+            stale_banner: 'Data stale or missing',
+            tab_kr: 'KR Market',
+            tab_us: 'US Market',
+            tab_calendar: 'Economic Calendar',
+            tab_risk: 'Risk',
+            tab_holdings: 'Holdings Matrix',
+            title_kr_market: 'KR Market',
+            title_us_market: 'US Market',
+            search_placeholder: 'Search for a name, ticker, or function (/)',
+            title_indices: 'Market Indices',
+            title_us_indices: 'US Market Indices',
+            label_real_time: 'Real-time Data',
+            title_smart_money: 'Smart Money Picks',
+            option_latest: 'Latest Analysis',
+            btn_refresh: 'Refresh',
+            title_etf_flows: 'ETF Flows (Top 3)',
+            label_inflows: 'Inflows',
+            label_outflows: 'Outflows',
+            ai_etf_insight: 'AI ETF Market Insight',
+            title_ai_summary: 'AI Investment Summary',
+            title_sector_perf: 'Sector Performance',
+            title_options_flow: 'Options Flow (Smart Money)',
+            title_macro: 'Global Macro Indicators',
+            title_macro_outlook: 'AI Market Outlook',
+            title_calendar: 'Economic Calendar',
+            btn_expand_all: 'Expand All',
+            btn_collapse_all: 'Collapse All',
+            ai_unavailable: 'Analysis unavailable.',
+            ai_select_hint: 'Select a stock to view AI analysis...',
+            no_index_data: 'No index data',
+            no_options: 'No options data',
+            calendar_no_events: 'No major events scheduled for this week.',
+            fail_chart: 'Failed to load chart',
+            title_price_chart: 'Price Chart',
+            title_ai_reco: 'AI Recommendations',
+            label_date: 'Date',
+            btn_reset: 'Reset',
+            label_update_interval: 'Update Interval',
+            btn_regen: 'Regenerate',
+            label_cached: 'cached',
+            label_generated: 'Generated',
+        }
+    };
+
+    const getPreferredLang = () => {
+        const stored = localStorage.getItem('ui.lang');
+        if (stored) return stored;
+        const nav = (navigator.language || '').toLowerCase();
+        if (nav.startsWith('ko')) return 'ko';
+        if (nav.startsWith('en')) return 'en';
+        return 'ko';
+    };
+
+    let currentLang = getPreferredLang();
+    let currentModel = localStorage.getItem('dashboardModel') || 'gemini';
+    let selectedDate = null;
+    let currentChartTicker = null;
+    let statusSnapshot = null;
+    let currentTheme = document.documentElement.getAttribute('data-theme') || 'dark';
+
+    const debounce = (fn, wait = 600) => {
+        let t;
+        return (...args) => {
+            clearTimeout(t);
+            t = setTimeout(() => fn.apply(null, args), wait);
+        };
+    };
+
+    const t = (key) => messages?.[currentLang]?.[key] || messages?.en?.[key] || key;
+
+    async function fetchWithRetry(url, options = {}, cfg = { retries: 2, backoffMs: 400, timeoutMs: 8000 }) {
+        const { retries = 2, backoffMs = 400, timeoutMs = 8000 } = cfg || {};
+        let attempt = 0;
+        let lastError = null;
+        const controller = new AbortController();
+        const merged = { ...options, signal: controller.signal };
+
+        const doFetch = async () => {
+            const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+            try {
+                const res = await fetch(url, merged);
+                const requestId = res.headers.get('X-Request-Id') || null;
+                let data = null;
+                try {
+                    data = await res.clone().json();
+                } catch (e) {
+                    lastError = e;
+                    return { ok: false, error: { message: 'Invalid JSON', status: res.status, requestId } };
+                }
+                if (res.ok) {
+                    return { ok: true, data, status: res.status, headers: res.headers, requestId };
+                }
+                if (res.status >= 500) {
+                    throw new Error(`Retryable status ${res.status}`);
+                }
+                return { ok: false, error: { message: data?.error || res.statusText, status: res.status, requestId, body: data } };
+            } catch (err) {
+                lastError = err;
+                if (attempt < retries) {
+                    await new Promise(r => setTimeout(r, backoffMs * Math.pow(2, attempt)));
+                    attempt += 1;
+                    return doFetch();
+                }
+                return { ok: false, error: { message: err?.message || 'Network error', status: 0, requestId: null } };
+            } finally {
+                clearTimeout(timeoutId);
+            }
+        };
+        return doFetch();
+    }
+
+    function renderStateBlock(type, message, opts = {}) {
+        const { requestId, onRetry } = opts;
+
+        if (type === 'loading') {
+            return document.createRange().createContextualFragment(`
+                <div class="animate-pulse flex flex-col space-y-3 w-full p-4">
+                    <div class="h-4 bg-gray-800 rounded w-3/4 mx-auto"></div>
+                    <div class="space-y-2">
+                        <div class="h-3 bg-gray-800 rounded"></div>
+                        <div class="h-3 bg-gray-800 rounded w-5/6"></div>
+                    </div>
+                </div>
+            `);
+        }
+
+        const base = document.createElement('div');
+        base.className = 'text-xs text-gray-500 py-8 text-center flex flex-col items-center justify-center gap-2';
+
+        let icon = '';
+        if (type === 'error') icon = '<i class="fas fa-exclamation-circle text-red-500 text-lg mb-1"></i>';
+        else if (type === 'empty') icon = '<i class="far fa-folder-open text-gray-600 text-lg mb-1"></i>';
+
+        const retryBtn = onRetry ? `<button class="px-3 py-1 text-[11px] rounded bg-gray-800 hover:bg-gray-700 text-gray-300 transition-colors border border-gray-700">${t('retry')}</button>` : '';
+        const rid = requestId ? `<div class="text-[10px] text-gray-600 font-mono">ID: ${requestId}</div>` : '';
+        const tone = type === 'error' ? 'text-red-400' : 'text-gray-400';
+
+        base.innerHTML = `${icon}<div class="${tone} font-medium">${message}</div>${retryBtn}${rid}`;
+
+        if (retryBtn && onRetry) {
+            base.querySelector('button')?.addEventListener('click', onRetry);
+        }
+        return base;
+    }
+
+    function safeArray(val) {
+        return Array.isArray(val) ? val : [];
+    }
+
+    function updateBadge(moduleName, elId) {
+        const el = document.getElementById(elId);
+        if (!el || !statusSnapshot?.modules?.[moduleName]) return;
+        const mod = statusSnapshot.modules[moduleName];
+        if (mod?.updated_at) {
+            const d = new Date(mod.updated_at);
+            el.textContent = `${t('updated')} ${d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+        } else {
+            el.textContent = `${t('updated')} -`;
+        }
+    }
+
+    function renderStaleBanner() {
+        const banner = document.getElementById('stale-banner');
+        if (!banner || !statusSnapshot?.modules) return;
+        const staleModules = Object.entries(statusSnapshot.modules)
+            .filter(([, m]) => m && (m.stale || (m.problems || []).length))
+            .map(([name]) => name);
+        if (staleModules.length === 0) {
+            banner.classList.add('hidden');
+            banner.textContent = '';
+            return;
+        }
+        banner.textContent = `${t('stale_banner')}: ${staleModules.join(', ')}`;
+        banner.classList.remove('hidden');
+    }
+
+    async function loadStatusSnapshot() {
+        try {
+            const res = await fetchWithRetry('/status', {}, { retries: 1, backoffMs: 300, timeoutMs: 5000 });
+            if (res.ok) {
+                statusSnapshot = res.data;
+                updateBadge('indices', 'badge-us-indices');
+                updateBadge('smart_money', 'badge-smart-money');
+                updateBadge('etf', 'badge-etf');
+                updateBadge('macro', 'badge-macro');
+                updateBadge('options', 'badge-options');
+                renderStaleBanner();
+            }
+        } catch (e) {
+            // ignore
+        }
+    }
+
+    function applyTheme(theme) {
+        currentTheme = theme;
+        localStorage.setItem('ui.theme', theme);
+        document.documentElement.setAttribute('data-theme', theme);
+        const btn = document.getElementById('theme-toggle');
+        if (btn) {
+            btn.textContent = theme === 'light' ? 'Light' : 'Dark';
+        }
+    }
+
+    function initTheme() {
+        const stored = localStorage.getItem('ui.theme');
+        const system = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+        const theme = stored || system || 'dark';
+        applyTheme(theme);
+        const btn = document.getElementById('theme-toggle');
+        if (btn) {
+            btn.addEventListener('click', () => applyTheme(currentTheme === 'light' ? 'dark' : 'light'));
+        }
+    }
+
+    function applyLang(lang) {
+        currentLang = lang;
+        localStorage.setItem('ui.lang', lang);
+        document.documentElement.setAttribute('lang', lang);
+        translateUI();
+        const koBtn = document.getElementById('lang-toggle-ko');
+        const enBtn = document.getElementById('lang-toggle-en');
+        if (koBtn && enBtn) {
+            koBtn.className = `text-xs px-2 py-1 rounded font-semibold ${lang === 'ko' ? 'bg-[#2a2a2a] text-white' : 'text-gray-400'}`;
+            enBtn.className = `text-xs px-2 py-1 rounded font-semibold ${lang === 'en' ? 'bg-[#2a2a2a] text-white' : 'text-gray-400'}`;
+        }
+    }
+
+    function initLang() {
+        const koBtn = document.getElementById('lang-toggle-ko');
+        const enBtn = document.getElementById('lang-toggle-en');
+        if (koBtn) koBtn.addEventListener('click', () => applyLang('ko'));
+        if (enBtn) enBtn.addEventListener('click', () => applyLang('en'));
+        applyLang(currentLang);
+    }
+
+    function switchMarketTab(el, tabKey) {
+        document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
+        el.classList.add('active');
+
+        document.getElementById('content-kr-market').classList.add('hidden');
+        document.getElementById('content-us-market').classList.add('hidden');
+        document.getElementById('content-economic-calendar').classList.add('hidden');
+        document.getElementById('content-risk').classList.add('hidden');
+        document.getElementById('content-holdings').classList.add('hidden');
+
+        const headerTitle = document.getElementById('main-header-title');
+
+        if (tabKey === 'kr') {
+            document.getElementById('content-kr-market').classList.remove('hidden');
+            if (headerTitle) headerTitle.textContent = t('title_kr_market');
+        } else if (tabKey === 'us') {
+            document.getElementById('content-us-market').classList.remove('hidden');
+            if (headerTitle) headerTitle.textContent = t('title_us_market');
+            if (!window.usDashboardLoaded) {
+                updateUSMarketDashboard();
+                window.usDashboardLoaded = true;
+            }
+        } else if (tabKey === 'calendar') {
+            document.getElementById('content-economic-calendar').classList.remove('hidden');
+            if (headerTitle) headerTitle.textContent = t('title_calendar');
+            reloadMacroAnalysis();
+        } else if (tabKey === 'risk') {
+            document.getElementById('content-risk').classList.remove('hidden');
+        } else if (tabKey === 'holdings') {
+            document.getElementById('content-holdings').classList.remove('hidden');
+        }
+    }
+
+    function switchTab(tab) {
+        document.querySelectorAll('.tab-btn').forEach(btn => {
+            btn.classList.remove('active', 'text-white', 'border-blue-500');
+            btn.classList.add('text-gray-400', 'border-transparent');
+        });
+        document.getElementById('tab-' + tab).classList.add('active', 'text-white', 'border-blue-500');
+        document.getElementById('tab-' + tab).classList.remove('text-gray-400', 'border-transparent');
+    }
+
+    function translateUI() {
+        document.documentElement.setAttribute('lang', currentLang);
+        document.querySelectorAll('[data-i18n-key]').forEach(el => {
+            const key = el.getAttribute('data-i18n-key');
+            const text = t(key);
+            if (text) el.textContent = text;
+        });
+        document.querySelectorAll('[data-i18n-placeholder-key]').forEach(el => {
+            const key = el.getAttribute('data-i18n-placeholder-key');
+            const text = t(key);
+            if (text) el.placeholder = text;
+        });
+        const latestOpt = document.querySelector('#us-history-date-select option[value=""]');
+        if (latestOpt) latestOpt.textContent = t('option_latest');
+        const headerTitle = document.getElementById('main-header-title');
+        const activeTab = document.querySelector('.nav-tab.active');
+        if (headerTitle && activeTab) {
+            const tabKey = activeTab.getAttribute('data-tab');
+            if (tabKey === 'us') headerTitle.textContent = t('title_us_market');
+            else if (tabKey === 'calendar') headerTitle.textContent = t('title_calendar');
+            else if (tabKey === 'risk' || tabKey === 'holdings') headerTitle.textContent = activeTab.textContent;
+            else headerTitle.textContent = t('title_kr_market');
+        }
+    }
+
+    async function reloadMacroAnalysis() {
+        try {
+            const macroRes = await fetchWithRetry(`/api/us/macro-analysis?lang=${currentLang}&model=${currentModel}`, {}, { retries: 1, backoffMs: 300, timeoutMs: 8000 });
+            if (macroRes.ok && macroRes.data?.macro_indicators) {
+                renderUSMacroAnalysis(macroRes.data);
+            }
+        } catch (e) {
+            console.log('Failed to reload macro analysis', e);
+        }
+    }
+
+    function toggleTickerDrawer(forceState = null) {
+        const drawer = document.getElementById('ticker-drawer');
+        const toggleBtn = document.getElementById('drawer-toggle-btn');
+        if (!drawer) return;
+
+        const isClosed = drawer.classList.contains('translate-x-full');
+        const shouldOpen = forceState !== null ? forceState : isClosed;
+
+        if (shouldOpen) {
+            drawer.classList.remove('translate-x-full');
+            if (toggleBtn) toggleBtn.classList.add('hidden');
+        } else {
+            drawer.classList.add('translate-x-full');
+            // Only show toggle button if we have a current ticker selected
+            if (currentDrawerTicker && toggleBtn) toggleBtn.classList.remove('hidden');
+        }
+    }
+
+    function openTickerDrawer(ticker) {
+        currentDrawerTicker = ticker;
+        setTickerQueryParam(ticker);
+
+        const title = document.getElementById('td-title');
+        const link = document.getElementById('td-full-link');
+
+        if (title) title.textContent = ticker;
+        if (link) link.href = `/?ticker=${ticker}`;
+
+        toggleTickerDrawer(true);
+        loadDrawerData(ticker);
+    }
+
+    // Expose for global usage
+    window.openTickerDrawer = openTickerDrawer;
+    window.toggleTickerDrawer = toggleTickerDrawer;
+
+    document.addEventListener('DOMContentLoaded', () => {
+        const toggle = document.getElementById('model-toggle');
+        if (toggle) {
+            toggle.addEventListener('click', (e) => {
+                if (e.target.tagName === 'BUTTON') {
+                    const model = e.target.dataset.model;
+                    if (model && model !== currentModel) {
+                        currentModel = model;
+                        localStorage.setItem('dashboardModel', model);
+                        toggle.querySelectorAll('button').forEach(btn => {
+                            btn.className = 'px-2 py-0.5 text-xs rounded-full text-gray-400 hover:text-white transition-colors';
+                        });
+                        e.target.className = 'px-2 py-0.5 text-xs rounded-full bg-purple-600 text-white transition-colors';
+                        const labelEl = document.getElementById('us-macro-model-label');
+                        if (labelEl) {
+                            labelEl.textContent = model === 'gpt' ? 'GPT-5.2 Macro Analysis' : 'Gemini 3.0 Macro Analysis';
+                        }
+                        reloadMacroAnalysis();
+                    }
+                }
+            });
+
+            toggle.querySelectorAll('button').forEach(btn => {
+                if (btn.dataset.model === currentModel) {
+                    btn.className = 'px-2 py-0.5 text-xs rounded-full bg-purple-600 text-white transition-colors';
+                }
+            });
+        }
+        translateUI();
+        loadStatusSnapshot();
+        initTheme();
+        initLang();
+        const initialTicker = new URLSearchParams(window.location.search).get('ticker');
+        if (initialTicker) {
+            openTickerDrawer(initialTicker.toUpperCase());
+        }
+    });
+</script>

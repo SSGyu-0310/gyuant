@@ -1,0 +1,906 @@
+<script>
+    // ============================================================
+    // Skeleton UI Loading States for improved CLS
+    // ============================================================
+    function getSkeletonHTML(type, count = 1) {
+        let html = '';
+        for (let i = 0; i < count; i++) {
+            switch (type) {
+                case 'table-row':
+                    // Smart Money Table row skeleton
+                    html += `<tr class="animate-pulse border-b border-gray-800/50">
+                        <td class="p-3"><div class="h-4 bg-gray-800 rounded w-6"></div></td>
+                        <td class="p-3"><div class="h-4 bg-gray-800 rounded w-16"></div></td>
+                        <td class="p-3 hidden md:table-cell"><div class="h-4 bg-gray-800 rounded w-24"></div></td>
+                        <td class="p-3"><div class="h-4 bg-gray-800 rounded w-14 mx-auto"></div></td>
+                        <td class="p-3"><div class="h-5 bg-gray-800 rounded-full w-12 mx-auto"></div></td>
+                        <td class="p-3 hidden md:table-cell"><div class="h-4 bg-gray-800 rounded w-12 mx-auto"></div></td>
+                        <td class="p-3"><div class="h-4 bg-gray-800 rounded w-10 mx-auto"></div></td>
+                    </tr>`;
+                    break;
+                case 'list-item':
+                    // ETF, Options, Top Movers list item skeleton
+                    html += `<div class="animate-pulse border border-gray-800/50 rounded-lg p-3 mb-2 bg-[#111]">
+                        <div class="flex justify-between items-center mb-2">
+                            <div class="flex items-center gap-2">
+                                <div class="h-4 bg-gray-800 rounded w-14"></div>
+                                <div class="h-3 bg-gray-800 rounded w-16"></div>
+                            </div>
+                            <div class="h-3 bg-gray-800 rounded w-10"></div>
+                        </div>
+                        <div class="flex justify-between">
+                            <div class="h-2 bg-gray-800 rounded w-20"></div>
+                            <div class="h-2 bg-gray-800 rounded w-12"></div>
+                        </div>
+                    </div>`;
+                    break;
+                case 'card':
+                    // Chart, Heatmap card skeleton
+                    html += `<div class="animate-pulse bg-[#111] border border-gray-800/50 rounded-lg p-4" style="height: 300px;">
+                        <div class="flex justify-between items-center mb-4">
+                            <div class="h-4 bg-gray-800 rounded w-32"></div>
+                            <div class="h-3 bg-gray-800 rounded w-20"></div>
+                        </div>
+                        <div class="grid grid-cols-6 gap-2 h-52">
+                            <div class="bg-gray-800 rounded col-span-2 row-span-2"></div>
+                            <div class="bg-gray-800 rounded"></div>
+                            <div class="bg-gray-800 rounded"></div>
+                            <div class="bg-gray-800 rounded col-span-2 row-span-2"></div>
+                            <div class="bg-gray-800 rounded"></div>
+                            <div class="bg-gray-800 rounded"></div>
+                            <div class="bg-gray-800 rounded col-span-3"></div>
+                            <div class="bg-gray-800 rounded col-span-3"></div>
+                        </div>
+                    </div>`;
+                    break;
+                case 'text':
+                    // AI Summary text skeleton
+                    html += `<div class="animate-pulse space-y-3 p-2">
+                        <div class="h-3 bg-gray-800 rounded w-full"></div>
+                        <div class="h-3 bg-gray-800 rounded w-11/12"></div>
+                        <div class="h-3 bg-gray-800 rounded w-4/5"></div>
+                        <div class="h-3 bg-gray-800 rounded w-full"></div>
+                        <div class="h-3 bg-gray-800 rounded w-3/4"></div>
+                    </div>`;
+                    break;
+                case 'indices':
+                    // Market indices skeleton
+                    html += `<div class="animate-pulse bg-[#1a1a1a] rounded p-2 text-center border border-gray-800/50">
+                        <div class="h-2 bg-gray-800 rounded w-10 mx-auto mb-2"></div>
+                        <div class="h-4 bg-gray-800 rounded w-16 mx-auto mb-1"></div>
+                        <div class="h-2 bg-gray-800 rounded w-12 mx-auto"></div>
+                    </div>`;
+                    break;
+                case 'macro-indicator':
+                    // Macro indicator skeleton (similar to indices but styled)
+                    html += `<div class="animate-pulse bg-[#1a1a1a] rounded p-2 text-center border border-gray-800/50">
+                        <div class="h-2 bg-gray-700 rounded w-12 mx-auto mb-2"></div>
+                        <div class="h-4 bg-gray-700 rounded w-14 mx-auto mb-1"></div>
+                        <div class="h-2 bg-gray-700 rounded w-10 mx-auto"></div>
+                    </div>`;
+                    break;
+                case 'calendar-item':
+                    // Calendar event skeleton
+                    html += `<div class="animate-pulse bg-[#1a1a1a] rounded p-3 mb-2 border border-gray-800/50">
+                        <div class="flex justify-between items-center">
+                            <div class="flex items-center gap-2">
+                                <div class="h-4 w-4 bg-gray-800 rounded"></div>
+                                <div class="h-3 bg-gray-800 rounded w-40"></div>
+                            </div>
+                            <div class="h-3 bg-gray-800 rounded w-20"></div>
+                        </div>
+                    </div>`;
+                    break;
+                default:
+                    html += `<div class="animate-pulse bg-gray-800 rounded h-4 w-full"></div>`;
+            }
+        }
+        return html;
+    }
+
+    // Helper to insert skeleton HTML into container
+    function showSkeleton(container, type, count = 1) {
+        if (!container) return;
+        container.innerHTML = getSkeletonHTML(type, count);
+    }
+
+    // ============================================================
+    // Formatting Utilities for improved data visualization
+    // ============================================================
+
+    // Get color class based on value (positive/negative/zero)
+    function formatColor(value) {
+        const num = Number(value);
+        if (isNaN(num) || num === 0) return 'text-gray-400';
+        return num > 0 ? 'text-green-400' : 'text-red-400';
+    }
+
+    // Get background color class for scores (heatmap style)
+    function formatScoreColor(score, max = 100) {
+        const ratio = Math.min(score / max, 1);
+        if (ratio >= 0.8) return 'bg-green-500/30 text-green-200';
+        if (ratio >= 0.6) return 'bg-green-600/20 text-green-300';
+        if (ratio >= 0.4) return 'bg-yellow-600/20 text-yellow-300';
+        if (ratio >= 0.2) return 'bg-orange-600/20 text-orange-300';
+        return 'bg-red-600/20 text-red-300';
+    }
+
+    // Format large numbers with K, M, B abbreviations
+    function formatNumber(value) {
+        const num = Number(value);
+        if (isNaN(num)) return '-';
+        const abs = Math.abs(num);
+        if (abs >= 1_000_000_000) return (num / 1_000_000_000).toFixed(1) + 'B';
+        if (abs >= 1_000_000) return (num / 1_000_000).toFixed(1) + 'M';
+        if (abs >= 1_000) return (num / 1_000).toFixed(1) + 'K';
+        return num.toLocaleString('en-US', { maximumFractionDigits: 2 });
+    }
+
+    // Format percentage with color and sign
+    function formatPercent(value, decimals = 2) {
+        const num = Number(value);
+        if (isNaN(num)) return '<span class="text-gray-500">-</span>';
+        const sign = num > 0 ? '+' : '';
+        const colorClass = formatColor(num);
+        const arrow = num > 0 ? '▲' : num < 0 ? '▼' : '';
+        return `<span class="${colorClass}">${arrow} ${sign}${num.toFixed(decimals)}%</span>`;
+    }
+
+    // Format price with dollar sign
+    function formatPrice(value) {
+        const num = Number(value);
+        if (isNaN(num)) return '-';
+        return '$' + num.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    }
+
+    // Create a mini progress bar for flow visualization
+    function formatFlowBar(score, maxScore = 100) {
+        const ratio = Math.min(Math.abs(score) / maxScore, 1) * 100;
+        const isPositive = score >= 50;
+        const barColor = isPositive ? 'bg-green-500' : 'bg-red-500';
+        return `<div class="flex items-center gap-2">
+            <div class="flex-1 h-1.5 bg-gray-700 rounded-full overflow-hidden">
+                <div class="${barColor} h-full rounded-full transition-all" style="width: ${ratio}%"></div>
+            </div>
+            <span class="text-xs ${isPositive ? 'text-green-400' : 'text-red-400'}">${score}</span>
+        </div>`;
+    }
+
+    // ============================================================
+    // Empty State with Run Analysis CTA
+    // ============================================================
+    let isAnalysisRunning = false;
+
+    function createEmptyStateCard(containerId) {
+        const card = document.createElement('div');
+        card.className = 'flex flex-col items-center justify-center p-8 bg-[#111] border border-gray-800 rounded-lg text-center';
+        card.id = `empty-state-${containerId}`;
+        card.innerHTML = `
+            <div class="text-4xl mb-4">📊</div>
+            <h3 class="text-lg font-semibold text-gray-200 mb-2">${t('no_data_title') || '아직 분석 데이터가 없습니다'}</h3>
+            <p class="text-sm text-gray-500 mb-4">${t('no_data_desc') || '백엔드 분석을 실행하여 데이터를 생성하세요'}</p>
+            <button 
+                onclick="triggerAnalysisFromEmptyState(this)"
+                class="px-4 py-2 bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-500 hover:to-blue-500 text-white rounded-lg font-medium transition-all flex items-center gap-2"
+                ${isAnalysisRunning ? 'disabled' : ''}
+            >
+                <span class="btn-icon">🚀</span>
+                <span class="btn-text">${t('run_analysis') || '지금 분석 실행'}</span>
+            </button>
+        `;
+        return card;
+    }
+
+    async function triggerAnalysisFromEmptyState(btn) {
+        if (isAnalysisRunning) return;
+        isAnalysisRunning = true;
+
+        // Update button to loading state
+        const btnIcon = btn.querySelector('.btn-icon');
+        const btnText = btn.querySelector('.btn-text');
+        btn.disabled = true;
+        btn.classList.add('opacity-75', 'cursor-not-allowed');
+        btnIcon.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+        btnText.textContent = t('running_analysis') || '분석 중... (약 5-10분 소요)';
+
+        try {
+            const res = await fetch('/api/run-analysis', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ quick: false })
+            });
+
+            if (res.ok) {
+                btnIcon.textContent = '✅';
+                btnText.textContent = t('analysis_started') || '분석이 시작되었습니다! 잠시 후 새로고침하세요.';
+
+                // Auto-refresh after 30 seconds
+                setTimeout(() => {
+                    location.reload();
+                }, 30000);
+            } else {
+                throw new Error('Failed to start analysis');
+            }
+        } catch (e) {
+            console.error('Analysis trigger failed:', e);
+            btnIcon.textContent = '❌';
+            btnText.textContent = t('analysis_failed') || '분석 시작 실패. 다시 시도해주세요.';
+            btn.disabled = false;
+            btn.classList.remove('opacity-75', 'cursor-not-allowed');
+            isAnalysisRunning = false;
+        }
+    }
+
+    // Enhanced renderStateBlock for empty states with run analysis CTA
+    function renderEmptyStateWithCTA(container, message) {
+        container.innerHTML = '';
+        container.appendChild(createEmptyStateCard(container.id || 'unknown'));
+    }
+
+    async function updateUSMarketDashboard() {
+        try {
+            const table = document.getElementById("us-smart-money-table");
+            const etfIn = document.getElementById("us-etf-inflows");
+            const macroBox = document.getElementById("us-macro-indicators");
+            const optionsBox = document.getElementById("us-options-flow");
+            const calendarBox = document.getElementById("us-calendar-events");
+            const indicesBox = document.getElementById("us-market-indices-container");
+            const heatmapBox = document.getElementById("us-sector-heatmap");
+
+            // Show skeleton loading states instead of simple spinners
+            if (table) { table.innerHTML = getSkeletonHTML('table-row', 10); }
+            if (etfIn) { etfIn.innerHTML = getSkeletonHTML('list-item', 5); }
+            if (macroBox) { macroBox.innerHTML = getSkeletonHTML('macro-indicator', 8); }
+            if (optionsBox) { optionsBox.innerHTML = getSkeletonHTML('list-item', 5); }
+            if (calendarBox) { calendarBox.innerHTML = getSkeletonHTML('calendar-item', 4); }
+            if (indicesBox) { indicesBox.innerHTML = getSkeletonHTML('indices', 6); }
+            if (heatmapBox) { heatmapBox.innerHTML = getSkeletonHTML('card', 1); }
+
+            const portfolioRes = await fetchWithRetry("/api/us/portfolio");
+            if (portfolioRes.ok && portfolioRes.data?.market_indices) {
+                renderUSMarketIndices(portfolioRes.data.market_indices);
+            } else if (indicesBox) {
+                indicesBox.innerHTML = "";
+                indicesBox.appendChild(renderStateBlock(portfolioRes.ok ? 'empty' : 'error', portfolioRes.ok ? t('no_index_data') : t('error_generic'), { requestId: portfolioRes.error?.requestId }));
+            }
+
+            const historyDatesRes = await fetchWithRetry("/api/us/history-dates", {}, { retries: 1, backoffMs: 300, timeoutMs: 6000 });
+            if (historyDatesRes.ok && historyDatesRes.data?.dates) {
+                populateUSHistoryDates(historyDatesRes.data.dates);
+            }
+
+            const smartMoneyRes = await fetchWithRetry("/api/us/smart-money");
+            if (smartMoneyRes.ok && safeArray(smartMoneyRes.data?.top_picks).length) {
+                renderUSSmartMoneyPicks(smartMoneyRes.data);
+            } else if (table) {
+                table.innerHTML = "";
+                table.appendChild(renderStateBlock(smartMoneyRes.ok ? 'empty' : 'error', smartMoneyRes.ok ? t('empty_generic') : t('error_generic'), {
+                    requestId: smartMoneyRes.error?.requestId,
+                    onRetry: () => updateUSMarketDashboard()
+                }));
+            }
+
+            const etfFlowsRes = await fetchWithRetry("/api/us/etf-flows");
+            if (etfFlowsRes.ok && etfFlowsRes.data?.top_inflows) {
+                renderUSETFFlows(etfFlowsRes.data);
+            } else if (etfIn) {
+                etfIn.innerHTML = "";
+                etfIn.appendChild(renderStateBlock(etfFlowsRes.ok ? 'empty' : 'error', etfFlowsRes.ok ? t('empty_generic') : t('error_generic'), {
+                    requestId: etfFlowsRes.error?.requestId,
+                    onRetry: () => updateUSMarketDashboard()
+                }));
+            }
+
+            const macroRes = await fetchWithRetry("/api/us/macro-analysis", {}, { retries: 1, backoffMs: 300, timeoutMs: 7000 });
+            if (macroRes.ok && (macroRes.data?.macro_indicators || macroRes.data?.ai_analysis)) {
+                renderUSMacroAnalysis(macroRes.data);
+            } else if (macroBox) {
+                macroBox.innerHTML = "";
+                macroBox.appendChild(renderStateBlock(macroRes.ok ? 'empty' : 'error', macroRes.ok ? t('empty_generic') : t('error_generic'), {
+                    requestId: macroRes.error?.requestId,
+                    onRetry: () => updateUSMarketDashboard()
+                }));
+            }
+
+            const sectorRes = await fetchWithRetry("/api/us/sector-heatmap", {}, { retries: 1, backoffMs: 300, timeoutMs: 6000 });
+            if (sectorRes.ok && (sectorRes.data?.series || sectorRes.data?.sectors)) {
+                renderUSSectorHeatmap(sectorRes.data);
+            }
+
+            const optionsRes = await fetchWithRetry("/api/us/options-flow", {}, { retries: 1, backoffMs: 300, timeoutMs: 6000 });
+            if (optionsRes.ok && Array.isArray(optionsRes.data?.options_flow)) {
+                renderUSOptionsFlow(optionsRes.data);
+            } else if (optionsBox) {
+                optionsBox.innerHTML = "";
+                optionsBox.appendChild(renderStateBlock(optionsRes.ok ? 'empty' : 'error', optionsRes.ok ? t('empty_generic') : t('error_generic'), {
+                    requestId: optionsRes.error?.requestId,
+                    onRetry: () => updateUSMarketDashboard()
+                }));
+            }
+
+            await loadUnusualTrades();
+            await loadTopMovers();
+
+            const calendarRes = await fetchWithRetry("/api/us/calendar", {}, { retries: 1, backoffMs: 300, timeoutMs: 6000 });
+            if (calendarRes.ok && calendarRes.data) {
+                renderUSCalendar(calendarRes.data);
+            } else if (calendarBox) {
+                calendarBox.innerHTML = "";
+                calendarBox.appendChild(renderStateBlock(calendarRes.ok ? 'empty' : 'error', calendarRes.ok ? t('empty_generic') : t('error_generic'), {
+                    requestId: calendarRes.error?.requestId,
+                    onRetry: () => updateUSMarketDashboard()
+                }));
+            }
+        } catch (e) {
+            console.error("Error updating US dashboard:", e);
+        }
+    }
+
+    function renderUSOptionsFlow(data) {
+        const container = document.getElementById("us-options-flow");
+        const timestampEl = document.getElementById("us-options-timestamp");
+        if (!container) return;
+
+        container.innerHTML = "";
+
+        if (timestampEl && data?.timestamp) {
+            const date = new Date(data.timestamp);
+            timestampEl.textContent = `${t('updated')} ${date.toLocaleString("ko-KR")}`;
+        }
+
+        const items = Array.isArray(data?.options_flow) ? data.options_flow.slice(0, 10) : [];
+        if (!items.length) {
+            container.appendChild(renderStateBlock('empty', t('no_options')));
+            return;
+        }
+
+        items.forEach((item) => {
+            const sentimentScore = Number(item?.signal?.sentiment_score || 50);
+            const tone =
+                sentimentScore >= 70 ? "bg-green-900/30 border-green-600/50" :
+                    sentimentScore <= 30 ? "bg-red-900/30 border-red-600/50" :
+                        "bg-yellow-900/30 border-yellow-600/50";
+            const ticker = item?.ticker || "-";
+            const currentPrice = item?.current_price ? `$${item.current_price}` : "-";
+            const pcRatio = item?.metrics?.pc_volume_ratio;
+            const iv = item?.metrics?.call_iv;
+
+            const div = document.createElement("div");
+            div.className = `border ${tone} rounded-lg p-3`;
+            div.innerHTML = `
+                <div class="flex justify-between items-center mb-1">
+                    <span class="text-sm font-bold text-white">${ticker}</span>
+                    <span class="text-xs text-gray-400">${currentPrice}</span>
+                </div>
+                <div class="text-xs mb-1">${item?.signal?.sentiment || "-"}</div>
+                <div class="flex justify-between text-xs text-gray-400">
+                    <span>P/C: ${pcRatio ? Number(pcRatio).toFixed(2) : "-"}</span>
+                    <span>IV: ${iv ? Number(iv).toFixed(0) + "%" : "-"}</span>
+                </div>
+            `;
+            container.appendChild(div);
+        });
+    }
+
+    let unusualFilters = { side: '', minScore: 70, sort: 'score', limit: 30 };
+    const refreshUnusual = debounce(() => loadUnusualTrades(), 600);
+    let topMoversWindow = '1d';
+    let topMoversSearch = '';
+    const refreshTopMovers = debounce(() => loadTopMovers(), 600);
+    let currentDrawerTicker = null;
+
+    async function loadUnusualTrades() {
+        const list = document.getElementById('us-unusual-list');
+        const updated = document.getElementById('us-unusual-updated');
+        if (!list) return;
+        // Show skeleton UI for unusual trades list
+        list.innerHTML = getSkeletonHTML('list-item', 10);
+        const params = new URLSearchParams();
+        if (unusualFilters.side) params.set('side', unusualFilters.side);
+        if (unusualFilters.minScore) params.set('min_score', unusualFilters.minScore);
+        if (unusualFilters.limit) params.set('limit', unusualFilters.limit);
+        if (unusualFilters.sort) params.set('sort', unusualFilters.sort);
+        try {
+            const res = await fetchWithRetry(`/options/unusual?${params.toString()}`, {}, { retries: 1, backoffMs: 300, timeoutMs: 6000 });
+            if (!res.ok) {
+                list.innerHTML = '';
+                list.appendChild(renderStateBlock('error', t('error_generic'), {
+                    requestId: res.error?.requestId,
+                    onRetry: () => loadUnusualTrades()
+                }));
+                return;
+            }
+            const items = safeArray(res.data?.data?.items);
+            list.innerHTML = '';
+            if (!items.length) {
+                list.appendChild(renderStateBlock('empty', t('empty_generic')));
+            } else {
+                items.slice(0, unusualFilters.limit).forEach(item => {
+                    const tags = safeArray(item.unusual_tags).map(tag => `<span class="text-[10px] px-1 py-0.5 rounded bg-[#222] border border-[#333] mr-1">${tag}</span>`).join('');
+                    const div = document.createElement('div');
+                    div.className = 'border border-[#333] rounded p-2 text-xs text-gray-200 bg-[#111]';
+                    div.innerHTML = `
+                        <div class="flex justify-between items-center mb-1">
+                            <div class="flex items-center gap-2">
+                                <span class="text-sm font-bold text-white">${item.ticker || '-'}</span>
+                                <span class="px-2 py-0.5 rounded ${item.side === 'call' ? 'bg-green-900/40 text-green-300' : 'bg-red-900/40 text-red-300'}">${(item.side || '-').toUpperCase()}</span>
+                                <span class="text-[11px] text-gray-400">${item.expiry || '-'}</span>
+                                <span class="text-[11px] text-gray-400">Strike: ${item.strike ?? '-'}</span>
+                            </div>
+                            <div class="text-[11px] text-gray-400">Score: <span class="text-white font-bold">${item.unusual_score ?? 0}</span></div>
+                        </div>
+                        <div class="flex justify-between text-[11px] text-gray-400">
+                            <span>Premium: ${item.premium ?? '-'}</span>
+                            <span>Vol: ${item.volume ?? '-'}</span>
+                            <span>OI: ${item.open_interest ?? '-'}</span>
+                            <span>IV: ${item.iv ?? '-'}</span>
+                            <span>Δ: ${item.delta ?? '-'}</span>
+                        </div>
+                        <div class="mt-1">${tags || '<span class="text-gray-500 text-[10px]">No tags</span>'}</div>
+                    `;
+                    list.appendChild(div);
+                });
+            }
+            if (updated) {
+                const ts = res.data?.meta?.updated_at;
+                updated.textContent = ts ? `${t('updated')} ${new Date(ts).toLocaleString()}` : '';
+            }
+        } catch (e) {
+            list.innerHTML = '';
+            list.appendChild(renderStateBlock('error', t('error_generic'), { onRetry: () => loadUnusualTrades() }));
+        }
+    }
+
+    async function loadTopMovers() {
+        const gainersEl = document.getElementById('tm-gainers');
+        const losersEl = document.getElementById('tm-losers');
+        const updated = document.getElementById('tm-updated');
+        if (!gainersEl || !losersEl) return;
+        // Show skeleton UI for top movers lists
+        gainersEl.innerHTML = getSkeletonHTML('list-item', 10);
+        losersEl.innerHTML = getSkeletonHTML('list-item', 10);
+        try {
+            const res = await fetchWithRetry(`/top-movers?window=${topMoversWindow}&limit=50`, {}, { retries: 1, backoffMs: 300, timeoutMs: 6000 });
+            if (!res.ok) {
+                gainersEl.innerHTML = '';
+                losersEl.innerHTML = '';
+                const block = renderStateBlock('error', t('error_generic'), { requestId: res.error?.requestId, onRetry: () => loadTopMovers() });
+                gainersEl.appendChild(block);
+                losersEl.appendChild(block.cloneNode(true));
+                return;
+            }
+            const gainers = safeArray(res.data?.data?.gainers);
+            const losers = safeArray(res.data?.data?.losers);
+            const filterFn = (item) => !topMoversSearch || String(item.ticker || '').toUpperCase().includes(topMoversSearch);
+            const renderList = (arr, target) => {
+                target.innerHTML = '';
+                const filtered = arr.filter(filterFn);
+                if (!filtered.length) {
+                    target.appendChild(renderStateBlock('empty', t('empty_generic')));
+                    return;
+                }
+                filtered.slice(0, 20).forEach(item => {
+                    const div = document.createElement('div');
+                    div.className = 'border border-[#333] rounded px-2 py-1 text-xs text-gray-200 bg-[#111] flex justify-between items-center hover:bg-[#222] cursor-pointer';
+                    const pct = Number(item.pct_change || 0);
+                    const pctClass = pct >= 0 ? 'text-green-400' : 'text-red-400';
+                    div.innerHTML = `
+                        <div class="flex items-center gap-2">
+                            <span class="text-sm font-bold">${item.ticker || '-'}</span>
+                            <span class="${pctClass} font-mono">${pct.toFixed(2)}%</span>
+                            <span class="text-[11px] text-gray-400">${item.abs_change ?? '-'}</span>
+                        </div>
+                        <div class="text-[11px] text-gray-500">${item.last_close ?? '-'}</div>
+                    `;
+                    div.addEventListener('click', () => {
+                        openTickerDrawer(item.ticker);
+                    });
+                    target.appendChild(div);
+                });
+            };
+            renderList(gainers, gainersEl);
+            renderList(losers, losersEl);
+            if (updated) {
+                const ts = res.data?.meta?.updated_at;
+                updated.textContent = ts ? `${t('updated')} ${new Date(ts).toLocaleString()}` : '';
+            }
+        } catch (e) {
+            gainersEl.innerHTML = '';
+            losersEl.innerHTML = '';
+            const block = renderStateBlock('error', t('error_generic'), { onRetry: () => loadTopMovers() });
+            gainersEl.appendChild(block);
+            losersEl.appendChild(block.cloneNode(true));
+        }
+    }
+
+    function setTickerQueryParam(ticker) {
+        const url = new URL(window.location.href);
+        if (ticker) url.searchParams.set('ticker', ticker);
+        else url.searchParams.delete('ticker');
+        window.history.replaceState({}, '', url.toString());
+    }
+
+    function closeTickerDrawer() {
+        const drawer = document.getElementById('ticker-drawer');
+        if (drawer) drawer.classList.add('hidden');
+        currentDrawerTicker = null;
+        setTickerQueryParam(null);
+    }
+
+    async function loadDrawerAISummary(ticker) {
+        const body = document.getElementById('td-ai-summary');
+        const updated = document.getElementById('td-ai-updated');
+        if (!body) return;
+        // Show skeleton UI for AI summary
+        body.innerHTML = getSkeletonHTML('text', 1);
+        if (updated) updated.textContent = '';
+        try {
+            const res = await fetchWithRetry(`/api/us/ai-summary/${ticker}?lang=${currentLang}`, {}, { retries: 1, backoffMs: 300, timeoutMs: 7000 });
+            if (!res.ok || !res.data?.summary) throw new Error(res.error?.message || 'no data');
+            body.innerHTML = res.data.summary;
+            if (updated) {
+                const ts = res.data.meta?.generated_at || res.data.updated;
+                updated.textContent = ts ? `${t('updated')} ${new Date(ts).toLocaleString()}` : '';
+            }
+        } catch (e) {
+            body.innerHTML = '';
+            body.appendChild(renderStateBlock('error', t('ai_unavailable'), { onRetry: () => loadDrawerAISummary(ticker) }));
+        }
+    }
+
+    async function loadDrawerUnusual(ticker) {
+        const list = document.getElementById('td-unusual-list');
+        if (!list) return;
+        // Show skeleton UI for drawer unusual trades
+        list.innerHTML = getSkeletonHTML('list-item', 5);
+        try {
+            const res = await fetchWithRetry(`/options/unusual?ticker=${ticker}&limit=10`, {}, { retries: 1, backoffMs: 300, timeoutMs: 6000 });
+            if (!res.ok) throw new Error('fail');
+            const items = safeArray(res.data?.data?.items);
+            list.innerHTML = '';
+            if (!items.length) {
+                list.appendChild(renderStateBlock('empty', t('empty_generic')));
+                return;
+            }
+            items.forEach(item => {
+                const div = document.createElement('div');
+                div.className = 'border border-[#333] rounded p-2 text-xs text-gray-200 bg-[#111]';
+                div.innerHTML = `
+                    <div class="flex justify-between mb-1">
+                        <span class="font-bold">${item.ticker || '-'}</span>
+                        <span class="text-[11px] text-gray-400">${item.expiry || '-'}</span>
+                    </div>
+                    <div class="flex justify-between text-[11px] text-gray-400">
+                        <span>${(item.side || '-').toUpperCase()}</span>
+                        <span>Premium: ${item.premium ?? '-'}</span>
+                        <span>Vol/OI: ${item.volume ?? '-'} / ${item.open_interest ?? '-'}</span>
+                        <span>Score: ${item.unusual_score ?? 0}</span>
+                    </div>
+                `;
+                list.appendChild(div);
+            });
+        } catch (e) {
+            list.innerHTML = '';
+            list.appendChild(renderStateBlock('error', t('error_generic'), { onRetry: () => loadDrawerUnusual(ticker) }));
+        }
+    }
+
+    async function loadDrawerData(ticker) {
+        await Promise.allSettled([
+            loadDrawerAISummary(ticker),
+            loadDrawerUnusual(ticker),
+        ]);
+    }
+
+    function openTickerDrawer(ticker) {
+        currentDrawerTicker = ticker;
+        setTickerQueryParam(ticker);
+        const drawer = document.getElementById('ticker-drawer');
+        if (!drawer) return;
+        drawer.classList.remove('hidden');
+        const title = document.getElementById('td-title');
+        const link = document.getElementById('td-full-link');
+        if (title) title.textContent = ticker;
+        if (link) link.href = `/?ticker=${ticker}`;
+        loadDrawerData(ticker);
+    }
+
+    window.openTickerDrawer = openTickerDrawer;
+    window.closeTickerDrawer = closeTickerDrawer;
+
+    document.addEventListener('DOMContentLoaded', () => {
+        const sideButtons = [
+            { id: 'unusual-side-all', val: '' },
+            { id: 'unusual-side-call', val: 'call' },
+            { id: 'unusual-side-put', val: 'put' },
+        ];
+        sideButtons.forEach(({ id, val }) => {
+            const btn = document.getElementById(id);
+            if (!btn) return;
+            btn.addEventListener('click', () => {
+                sideButtons.forEach(b => {
+                    const el = document.getElementById(b.id);
+                    if (el) el.className = 'px-2 py-1 text-[11px] rounded text-gray-300';
+                });
+                btn.className = 'px-2 py-1 text-[11px] rounded bg-[#2a2a2a] text-white';
+                unusualFilters.side = val;
+                refreshUnusual();
+            });
+        });
+
+        document.querySelectorAll('.unusual-score-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.querySelectorAll('.unusual-score-btn').forEach(b => b.className = 'unusual-score-btn px-2 py-1 text-[11px] rounded text-gray-300');
+                btn.className = 'unusual-score-btn px-2 py-1 text-[11px] rounded bg-[#2a2a2a] text-white';
+                unusualFilters.minScore = Number(btn.dataset.score || 70);
+                refreshUnusual();
+            });
+        });
+
+        const sortSel = document.getElementById('unusual-sort');
+        if (sortSel) {
+            sortSel.addEventListener('change', () => {
+                unusualFilters.sort = sortSel.value;
+                refreshUnusual();
+            });
+        }
+        const refreshBtn = document.getElementById('unusual-refresh');
+        if (refreshBtn) {
+            refreshBtn.addEventListener('click', () => {
+                refreshUnusual();
+            });
+        }
+
+        const tmTabs = document.querySelectorAll('[id^="tm-tab-"]');
+        tmTabs.forEach(btn => {
+            btn.addEventListener('click', () => {
+                tmTabs.forEach(b => b.className = 'px-2 py-1 text-[11px] rounded text-gray-300');
+                btn.className = 'px-2 py-1 text-[11px] rounded bg-[#2a2a2a] text-white';
+                topMoversWindow = btn.dataset.window || '1d';
+                refreshTopMovers();
+            });
+        });
+        const tmSearch = document.getElementById('tm-search');
+        if (tmSearch) {
+            tmSearch.addEventListener('input', () => {
+                topMoversSearch = tmSearch.value.trim().toUpperCase();
+                refreshTopMovers();
+            });
+        }
+        const tmRefresh = document.getElementById('tm-refresh');
+        if (tmRefresh) {
+            tmRefresh.addEventListener('click', () => refreshTopMovers());
+        }
+
+        const toggleAI = document.getElementById('toggle-ai-panel');
+        const aiBody = document.getElementById('ai-panel-body');
+        if (toggleAI && aiBody) {
+            toggleAI.addEventListener('click', () => {
+                const hidden = aiBody.classList.toggle('hidden');
+                toggleAI.textContent = hidden ? 'Expand' : 'Collapse';
+            });
+        }
+        const toggleUnusual = document.getElementById('toggle-unusual-panel');
+        const unusualBody = document.getElementById('unusual-panel-body');
+        if (toggleUnusual && unusualBody) {
+            toggleUnusual.addEventListener('click', () => {
+                const hidden = unusualBody.classList.toggle('hidden');
+                toggleUnusual.textContent = hidden ? 'Expand' : 'Collapse';
+            });
+        }
+    });
+
+    function renderUSMacroAnalysis(data) {
+        const indicatorsEl = document.getElementById("us-macro-indicators");
+        const analysisEl = document.getElementById("us-macro-ai-analysis");
+        const timestampEl = document.getElementById("us-macro-timestamp");
+
+        if (timestampEl && data?.timestamp) {
+            const date = new Date(data.timestamp);
+            timestampEl.textContent = `${t('updated')} ${date.toLocaleDateString("ko-KR")} ${date.toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" })}`;
+        }
+
+        // Check if macro indicators exist
+        if (indicatorsEl) {
+            if (!data?.macro_indicators || Object.keys(data.macro_indicators).length === 0) {
+                // Show empty state with CTA
+                if (typeof renderEmptyStateWithCTA === 'function') {
+                    renderEmptyStateWithCTA(indicatorsEl, t('no_macro_data') || '매크로 데이터 없음');
+                } else {
+                    indicatorsEl.innerHTML = `<div class="col-span-full text-center text-gray-500 py-4">
+                        ${t('no_macro_data') || '매크로 분석 데이터가 없습니다'}
+                    </div>`;
+                }
+            } else {
+                indicatorsEl.innerHTML = "";
+                const volatilityIndicators = ["VIX", "SKEW", "FearGreed"];
+                const cryptoIndicators = ["BTC", "ETH"];
+                const yieldIndicators = ["YieldSpread", "2Y_Yield", "10Y_Yield"];
+
+                Object.entries(data.macro_indicators).forEach(([name, values]) => {
+                    const value = values?.current ?? values?.value ?? "-";
+                    const change = Number(values?.change_1d || 0);
+                    const changeClass = change >= 0 ? "text-green-400" : "text-red-400";
+                    let boxClass = "bg-[#1a1a1a] rounded p-2 text-center border border-[#2a2a2a]";
+                    let labelClass = "text-xs text-gray-500";
+
+                    if (volatilityIndicators.includes(name)) {
+                        boxClass = "bg-purple-900/30 rounded p-2 text-center border border-purple-600/50 shadow-lg shadow-purple-500/20";
+                        labelClass = "text-xs text-purple-300 font-bold";
+                    } else if (cryptoIndicators.includes(name)) {
+                        boxClass = "bg-orange-900/30 rounded p-2 text-center border border-orange-600/50 shadow-lg shadow-orange-500/20";
+                        labelClass = "text-xs text-orange-300 font-bold";
+                    } else if (yieldIndicators.includes(name)) {
+                        boxClass = "bg-blue-900/30 rounded p-2 text-center border border-blue-600/50 shadow-lg shadow-blue-500/20";
+                        labelClass = "text-xs text-blue-300 font-bold";
+                    }
+
+                    const div = document.createElement("div");
+                    div.className = boxClass;
+                    const arrow = change > 0 ? '▲' : change < 0 ? '▼' : '';
+                    div.innerHTML = `
+                        <div class="${labelClass}">${name}</div>
+                        <div class="text-sm font-bold text-white">${typeof formatNumber === 'function' && !isNaN(Number(value)) ? formatNumber(value) : value}</div>
+                        <div class="${changeClass} text-xs font-medium">${arrow} ${change >= 0 ? '+' : ''}${Math.abs(change).toFixed(2)}%</div>
+                    `;
+                    indicatorsEl.appendChild(div);
+                });
+            }
+        }
+
+        if (analysisEl) {
+            if (data?.ai_analysis) {
+                const text = String(data.ai_analysis)
+                    .replace(/^###\s+(.*)$/gm, '<h3 class="text-purple-300 font-bold mt-3 mb-1">$1</h3>')
+                    .replace(/\*\*(.*?)\*\*/g, '<strong class="text-white">$1</strong>')
+                    .replace(/\n/g, "<br>");
+                analysisEl.innerHTML = text;
+            } else {
+                analysisEl.innerHTML = `<span class="text-gray-500">${t('no_ai_analysis') || 'AI 분석 데이터가 없습니다. 분석을 실행해주세요.'}</span>`;
+            }
+        }
+    }
+
+    function renderUSCalendar(data) {
+        const container = document.getElementById("us-calendar-events");
+        const rangeEl = document.getElementById("us-calendar-range");
+        if (!container) return;
+
+        if (rangeEl && data?.week_start && data?.week_end) {
+            rangeEl.textContent = `${data.week_start} ~ ${data.week_end}`;
+        }
+
+        container.innerHTML = "";
+
+        const events = Array.isArray(data?.events) ? data.events : [];
+        if (events.length === 0) {
+            container.innerHTML = `<div class="text-center text-xs text-gray-500 py-2">${t('calendar_no_events')}</div>`;
+            return;
+        }
+
+        events.forEach((event, idx) => {
+            const eventId = `cal-evt-${idx}-${Math.random().toString(36).slice(2, 8)}`;
+            const icon = event?.type === "Earnings" ? "E" : "*";
+            const colorClass = event?.impact === "High" ? "text-red-300" : "text-gray-300";
+            const bgClass = event?.impact === "High" ? "bg-red-900/20 border border-red-800/30" : "bg-[#2a2a2a]";
+
+            const descriptionHtml = event?.description
+                ? String(event.description).replace(/\*\*(.*?)\*\*/g, '<strong class="text-gray-200">$1</strong>').replace(/\\n/g, "<br>")
+                : '<span class="text-gray-500">No details provided.</span>';
+
+            const div = document.createElement("div");
+            div.className = "mb-2";
+            div.innerHTML = `
+                <div class="flex items-center justify-between p-2 rounded text-xs ${bgClass} cursor-pointer hover:bg-opacity-80 transition-all"
+                    onclick="toggleCalendarDetails('${eventId}')">
+                    <div class="flex items-center gap-2"><span>${icon}</span><span class="font-medium ${colorClass}">${event?.event || "-"}</span></div>
+                    <div class="flex items-center gap-2"><span class="text-gray-500">${event?.date || "-"}</span><i
+                            class="fas fa-chevron-down text-[10px] text-gray-500 transition-transform" id="arrow-${eventId}"></i></div>
+                </div>
+                <div id="${eventId}" class="hidden bg-[#222] border-x border-b border-[#2a2a2a] rounded-b p-3 text-xs text-gray-400 space-y-2">
+                    <div class="flex justify-between items-center border-b border-gray-700 pb-2 mb-2">
+                        <span class="font-semibold text-gray-300">Details</span>
+                        <span class="bg-gray-800 px-2 py-0.5 rounded text-[10px]">Impact: ${event?.impact || "-"}</span>
+                    </div>
+                    <div class="leading-relaxed whitespace-pre-wrap">${descriptionHtml}</div>
+                </div>
+            `;
+            container.appendChild(div);
+        });
+    }
+
+    function toggleCalendarDetails(id) {
+        const el = document.getElementById(id);
+        const arrow = document.getElementById(`arrow-${id}`);
+        if (!el) return;
+        const willOpen = el.classList.contains("hidden");
+        el.classList.toggle("hidden", !willOpen);
+        if (arrow) {
+            arrow.style.transform = willOpen ? "rotate(180deg)" : "rotate(0deg)";
+        }
+    }
+
+    function expandAllCalendarEvents() {
+        document.querySelectorAll('[id^="cal-evt-"]').forEach(el => el.classList.remove("hidden"));
+        document.querySelectorAll('[id^="arrow-cal-evt-"]').forEach(arrow => arrow.style.transform = "rotate(180deg)");
+    }
+
+    function collapseAllCalendarEvents() {
+        document.querySelectorAll('[id^="cal-evt-"]').forEach(el => el.classList.add("hidden"));
+        document.querySelectorAll('[id^="arrow-cal-evt-"]').forEach(arrow => arrow.style.transform = "rotate(0deg)");
+    }
+
+    function renderUSSectorHeatmap(data) {
+        const container = document.getElementById("us-sector-heatmap");
+        if (!container) return;
+
+        const dateEl = document.getElementById("us-heatmap-date");
+        if (dateEl && data?.data_date) {
+            dateEl.textContent = `As of: ${data.data_date}`;
+        }
+
+        container.innerHTML = "";
+
+        if (window.__usSectorHeatmapChart && typeof window.__usSectorHeatmapChart.destroy === "function") {
+            try { window.__usSectorHeatmapChart.destroy(); } catch (e) { }
+            window.__usSectorHeatmapChart = null;
+        }
+
+        const series = Array.isArray(data?.series) ? data.series : [];
+        const seriesData = series.map(sector => ({
+            name: sector?.name || "Sector",
+            data: Array.isArray(sector?.data) ? sector.data.map(stock => ({
+                x: stock?.x || "-",
+                y: Number.isFinite(Number(stock?.y)) ? Number(stock.y) : 1,
+                fillColor: stock?.color,
+                meta: { change: stock?.change, price: stock?.price }
+            })) : []
+        }));
+
+        if (typeof ApexCharts === "undefined") {
+            console.error("ApexCharts is not loaded");
+            return;
+        }
+
+        const options = {
+            series: seriesData,
+            chart: { type: "treemap", height: 300, toolbar: { show: false }, fontFamily: "Inter, sans-serif", background: "transparent" },
+            legend: { show: false },
+            plotOptions: { treemap: { distributed: true, enableShades: false, useFillColorAsStroke: true } },
+            dataLabels: {
+                enabled: true,
+                style: { fontSize: "10px", fontWeight: "bold", colors: ["#ffffff"] },
+                formatter: function (text, op) {
+                    try {
+                        const dp = op.w.config.series[op.seriesIndex].data[op.dataPointIndex];
+                        const change = dp?.meta?.change;
+                        if (Number.isFinite(Number(change))) {
+                            const c = Number(change);
+                            return [text, `${c >= 0 ? "+" : ""}${c.toFixed(1)}%`];
+                        }
+                    } catch (e) { }
+                    return text;
+                },
+                offsetY: -4
+            },
+            tooltip: {
+                theme: "dark",
+                y: {
+                    formatter: function (value, op) {
+                        const dp = op.w.config.series[op.seriesIndex].data[op.dataPointIndex];
+                        const change = dp?.meta?.change;
+                        const price = dp?.meta?.price;
+                        const chText = Number.isFinite(Number(change)) ? `${change > 0 ? "+" : ""}${Number(change).toFixed(2)}%` : "-";
+                        const prText = Number.isFinite(Number(price)) ? `$${price}` : "-";
+                        return `${prText} (${chText})`;
+                    }
+                }
+            },
+            stroke: { width: 1, colors: ["#1a1a1a"] }
+        };
+
+        const chart = new ApexCharts(container, options);
+        chart.render();
+        window.__usSectorHeatmapChart = chart;
+    }
+</script>

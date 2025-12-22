@@ -1,0 +1,52 @@
+<header class="h-14 border-b koyfin-border flex items-center px-4 justify-between shrink-0 bg-[#121212]">
+    <div class="flex items-center gap-4">
+        <button class="text-gray-400 hover:text-white"><i class="fas fa-bars"></i></button>
+        <div class="flex items-center gap-2 text-sm">
+            <button class="text-gray-500 hover:text-white flex items-center gap-1 text-xs font-medium"><i
+                    class="fas fa-chevron-left"></i> Back</button>
+            <div class="h-4 w-px bg-[#333] mx-2"></div>
+            <h1 id="main-header-title" class="text-lg font-bold text-white tracking-tight">KR Market</h1>
+        </div>
+    </div>
+    <div class="flex-1 max-w-xl mx-8">
+        <div class="relative group">
+            <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none"><i
+                    class="fas fa-search text-gray-600 group-focus-within:text-blue-500"></i></div>
+            <input type="text"
+                class="block w-full pl-10 pr-3 py-1.5 border border-[#333] rounded bg-[#1a1a1a] text-gray-300 placeholder-gray-600 focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600 sm:text-sm transition-colors"
+                data-i18n-placeholder-key="search_placeholder" placeholder="Search for a name, ticker, or function (/)">
+            <div class="absolute inset-y-0 right-0 pr-2 flex items-center pointer-events-none"><span
+                    class="text-gray-600 text-xs border border-[#333] rounded px-1.5">/</span></div>
+        </div>
+    </div>
+    <div class="flex items-center gap-2">
+        <button
+            class="bg-[#1a1a1a] hover:bg-[#2a2a2a] text-gray-300 border border-[#333] px-3 py-1.5 rounded text-xs font-medium flex items-center gap-2 transition-colors"><i
+                class="far fa-file-alt"></i> Create Report</button>
+        <button
+            class="bg-[#1a1a1a] hover:bg-[#2a2a2a] text-gray-300 border border-[#333] px-3 py-1.5 rounded text-xs font-medium flex items-center gap-2 transition-colors"><i
+                class="far fa-sticky-note"></i> My Notes</button>
+        <button
+            class="bg-[#1a1a1a] hover:bg-[#2a2a2a] text-gray-300 border border-[#333] px-3 py-1.5 rounded text-xs font-medium flex items-center gap-2 transition-colors"><i
+                class="fas fa-share-alt"></i> Share</button>
+        <button
+            class="bg-[#e0e0e0] hover:bg-white text-black border border-transparent px-3 py-1.5 rounded text-xs font-bold flex items-center gap-2 transition-colors"><i
+                class="fas fa-pen"></i> Edit Portfolio</button>
+        <div class="flex items-center gap-2 border border-[#333] rounded px-2 py-1 bg-[#1a1a1a]">
+            <button id="lang-toggle-ko" aria-label="Switch to Korean"
+                class="text-xs px-2 py-1 rounded font-semibold">KO</button>
+            <button id="lang-toggle-en" aria-label="Switch to English"
+                class="text-xs px-2 py-1 rounded font-semibold">EN</button>
+        </div>
+        <button id="theme-toggle" aria-label="Toggle theme"
+            class="text-xs px-2 py-1 rounded bg-[#1a1a1a] hover:bg-[#2a2a2a] text-gray-300 border border-[#333]">Dark</button>
+    </div>
+</header>
+<div class="h-10 border-b koyfin-border flex items-center px-4 gap-1 bg-[#121212] shrink-0">
+    <div class="nav-tab active" data-tab="kr" data-i18n-key="tab_kr" onclick="switchMarketTab(this, 'kr')">KR Market</div>
+    <div class="nav-tab" data-tab="us" data-i18n-key="tab_us" onclick="switchMarketTab(this, 'us')">US Market</div>
+    <div class="nav-tab" data-tab="calendar" data-i18n-key="tab_calendar" onclick="switchMarketTab(this, 'calendar')">Economic Calendar</div>
+    <div class="nav-tab">Historical Returns</div>
+    <div class="nav-tab" data-tab="risk" data-i18n-key="tab_risk" onclick="switchMarketTab(this, 'risk')">Risk</div>
+    <div class="nav-tab" data-tab="holdings" data-i18n-key="tab_holdings" onclick="switchMarketTab(this, 'holdings')">Holdings Matrix</div>
+</div>

@@ -1,0 +1,65 @@
+<div id="content-economic-calendar" class="hidden space-y-4">
+    <div class="grid grid-cols-12 gap-6">
+        <!-- Left: Calendar Events -->
+        <div class="col-span-12 lg:col-span-4 border border-[#2a2a2a] rounded p-4 bg-[#1a1a1a] min-h-[600px]">
+            <div class="flex items-center justify-between mb-4 border-b border-[#2a2a2a] pb-2">
+                <h3 class="text-lg font-bold text-white" data-i18n-key="title_calendar">Economic Calendar</h3>
+                <span id="us-calendar-range" class="text-xs text-gray-500"></span>
+            </div>
+            <div class="flex gap-2 mb-3">
+                <button onclick="expandAllCalendarEvents()"
+                    class="text-xs bg-gray-700 text-gray-300 px-2 py-1 rounded hover:bg-gray-600" data-i18n-key="btn_expand_all">Expand All</button>
+                <button onclick="collapseAllCalendarEvents()"
+                    class="text-xs bg-gray-700 text-gray-300 px-2 py-1 rounded hover:bg-gray-600" data-i18n-key="btn_collapse_all">Collapse All</button>
+            </div>
+            <div id="us-calendar-events" class="space-y-2 overflow-y-auto h-[500px] custom-scrollbar">
+                <!-- Events -->
+            </div>
+        </div>
+
+        <!-- Right: Macro Analysis Dashboard -->
+        <div class="col-span-12 lg:col-span-8 space-y-6">
+            <!-- Macro Indicators Grid -->
+            <div class="border border-[#2a2a2a] rounded p-4 bg-[#1a1a1a]">
+                <div class="flex items-center justify-between mb-4">
+                    <div class="flex items-center gap-2">
+                        <h3 class="text-lg font-bold text-white" data-i18n-key="title_macro">Global Macro Indicators</h3>
+                        <span id="badge-macro" class="text-[11px] text-gray-500"></span>
+                    </div>
+                    <span id="us-macro-timestamp" class="text-xs text-gray-500"></span>
+                </div>
+                <div id="us-macro-indicators" class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-3">
+                    <!-- Indicators -->
+                </div>
+            </div>
+
+            <!-- AI Macro Analysis -->
+            <div class="border border-[#2a2a2a] rounded p-4 bg-[#1a1a1a] flex-1 min-h-[400px]">
+                <div class="flex items-center justify-between mb-4 border-b border-[#2a2a2a] pb-2">
+                    <h3 class="text-lg font-bold text-purple-400 flex items-center gap-2">
+                        <i class="fas fa-brain"></i> <span data-i18n-key="title_macro_outlook">AI Market Outlook</span>
+                    </h3>
+                    <div class="flex gap-2" id="model-toggle">
+                        <button class="px-2 py-0.5 text-xs rounded-full bg-purple-600 text-white transition-colors"
+                            data-model="gemini">Gemini 3.0</button>
+                        <button
+                            class="px-2 py-0.5 text-xs rounded-full text-gray-400 hover:text-white transition-colors"
+                            data-model="gpt">GPT-5.2</button>
+                    </div>
+                </div>
+                <div id="us-macro-ai-analysis"
+                    class="text-sm text-gray-300 leading-relaxed whitespace-pre-wrap font-sans">
+                    <span data-i18n-key="loading_ai">AI is analyzing current macro economic conditions...</span>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div id="content-risk" class="hidden">
+    <div class="flex items-center justify-center h-64 text-gray-500">Risk Analysis Module - Coming Soon</div>
+</div>
+
+<div id="content-holdings" class="hidden">
+    <div class="flex items-center justify-center h-64 text-gray-500">Holdings Matrix Module - Coming Soon</div>
+</div>

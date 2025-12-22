@@ -1,0 +1,169 @@
+<head>
+    <script>
+        (function () {
+            try {
+                const stored = localStorage.getItem('ui.theme');
+                const system = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+                const theme = stored || system || 'dark';
+                document.documentElement.setAttribute('data-theme', theme);
+            } catch (e) {
+                document.documentElement.setAttribute('data-theme', 'dark');
+            }
+        })();
+    </script>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Market Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lightweight-charts@3.8.0/dist/lightweight-charts.standalone.production.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/apexcharts"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+
+        :root {
+            --bg: #0f172a;
+            --bg-panel: #111827;
+            --bg-card: #111827;
+            --text: #e5e7eb;
+            --muted: #9ca3af;
+            --border: #1f2937;
+            --accent: #6366f1;
+            --radius: 8px;
+            --space-1: 4px;
+            --space-2: 8px;
+            --space-3: 12px;
+            --space-4: 16px;
+            --text-xs: 11px;
+            --text-sm: 13px;
+            --text-base: 14px;
+        }
+
+        [data-theme="light"] {
+            --bg: #f8fafc;
+            --bg-panel: #ffffff;
+            --bg-card: #ffffff;
+            --text: #0f172a;
+            --muted: #475569;
+            --border: #e2e8f0;
+            --accent: #2563eb;
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: var(--bg);
+            color: var(--text);
+            overflow: hidden;
+        }
+
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: #1a1a1a;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: #333;
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: #444;
+        }
+
+        .koyfin-border {
+            border-color: var(--border);
+        }
+
+        .koyfin-header-bg {
+            background-color: var(--bg);
+        }
+
+        .koyfin-panel-bg {
+            background-color: var(--bg-panel);
+        }
+
+        .koyfin-card-bg {
+            background-color: var(--bg-card);
+        }
+
+        .koyfin-green {
+            color: #00E396;
+        }
+
+        .koyfin-red {
+            color: #FF4560;
+        }
+
+        .nav-tab {
+            padding: var(--space-2) var(--space-3);
+            font-size: var(--text-sm);
+            font-weight: 500;
+            color: var(--muted);
+            cursor: pointer;
+            border-bottom: 2px solid transparent;
+            transition: all 0.2s;
+        }
+
+        .nav-tab:hover {
+            color: var(--text);
+        }
+
+        .nav-tab.active {
+            color: var(--text);
+            border-bottom-color: #fff;
+            font-weight: 600;
+        }
+
+        .koyfin-table th {
+            font-weight: 500;
+            color: var(--muted);
+            font-size: var(--text-xs);
+            padding: var(--space-2);
+            border-bottom: 1px solid var(--border);
+            text-align: right;
+        }
+
+        .koyfin-table th:first-child {
+            text-align: left;
+        }
+
+        .koyfin-table td {
+            padding: var(--space-2);
+            font-size: var(--text-sm);
+            border-bottom: 1px solid #1f1f1f;
+            text-align: right;
+        }
+
+        .koyfin-table td:first-child {
+            text-align: left;
+        }
+
+        .koyfin-table tr:hover td {
+            background-color: #1a1a1a;
+        }
+
+        .style-box-cell {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: var(--text-sm);
+            font-weight: 500;
+            color: #121212;
+            border: 1px solid #121212;
+        }
+
+        .text-xxs {
+            font-size: 10px;
+        }
+
+        .text-xxs {
+            font-size: 10px;
+        }
+    </style>
+</head>

@@ -1,0 +1,30 @@
+# [기존 항목]
+node_modules/
+.next/
+dist/
+build/
+.env
+.env.local
+.env.*.local
+.venv/
+__pycache__/
+*.pyc
+*.db
+.DS_Store
+Thumbs.db
+
+# [데이터 및 분석 결과물 - 추가]
+# 대량의 데이터 파일은 로컬에서 스크립트로 생성하므로 제외합니다.
+*.csv
+*.json
+!us_market/weekly_calendar.json  # 설정 성격의 JSON은 예외로 포함할 수 있음
+!etf_flow_analysis.json          # 필요한 경우 제외
+
+# 로그 및 임시 파일
+logs/
+*.log
+us_13f_cache.json
+
+# 환경 설정
+# .env는 절대 올리지 말고 .env.example만 공유합니다.
+.env

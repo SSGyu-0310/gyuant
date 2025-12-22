@@ -1,0 +1,164 @@
+﻿<script>
+    document.addEventListener('DOMContentLoaded', async () => {
+        const dateInput = document.getElementById('history-date');
+        if (dateInput) {
+            const today = new Date().toISOString().split('T')[0];
+            dateInput.max = today;
+            dateInput.addEventListener('change', (e) => { selectedDate = e.target.value; updateDashboard(); });
+        }
+
+        window.priceUpdateInterval = setInterval(updateRealtimePrices, 20000);
+        setInterval(() => { reloadMacroAnalysis(); }, 600000);
+
+        updateDashboard();
+    });
+
+    function resetDate() {
+        const input = document.getElementById('history-date');
+        if (input) input.value = '';
+        selectedDate = null;
+        updateDashboard();
+    }
+
+    async function updateDashboard() {
+        try {
+            let url = '/api/portfolio';
+            if (selectedDate) url += `?date=${selectedDate}`;
+            const res = await fetchWithRetry(url, {}, { retries: 1, backoffMs: 300, timeoutMs: 6000 });
+            if (!res.ok) {
+                const container = document.getElementById('market-indices-container');
+                if (container) { container.innerHTML = ''; container.appendChild(renderStateBlock('error', t('error_generic'), { requestId: res.error?.requestId })); }
+                return;
+            }
+            const data = res.data || {};
+            if (data.market_indices) renderMarketIndices(data.market_indices);
+            if (data.top_holdings) renderHoldingsTable(data.top_holdings);
+            if (data.style_box) renderStyleBox(data.style_box);
+            if (safeArray(data.top_holdings).length > 0) updateSummaryChart(data.top_holdings[0].ticker);
+        } catch (e) { console.error("Error updating KR dashboard:", e); }
+    }
+
+    function renderMarketIndices(indices) {
+        const container = document.getElementById('market-indices-container');
+        if (!container) return;
+        container.innerHTML = '';
+        const list = safeArray(indices);
+        if (!list.length) {
+            container.appendChild(renderStateBlock('empty', t('no_index_data')));
+            return;
+        }
+        list.forEach(idx => {
+            const colorClass = idx.color === 'red' ? 'text-[#FF4560]' : (idx.color === 'blue' ? 'text-[#2962FF]' : 'text-gray-400');
+            container.innerHTML += `
+            <div class="bg-[#1a1a1a] border border-[#2a2a2a] rounded p-3 flex flex-col items-center justify-center hover:bg-[#252525] transition-colors">
+                <span class="text-xs text-gray-400 mb-1">${idx.name}</span>
+                <span class="text-lg font-bold text-white mb-1">${idx.price}</span>
+                <span class="text-xs font-medium ${colorClass}">${idx.change} (${Number(idx.change_pct || 0).toFixed(2)}%)</span>
+            </div>`;
+        });
+    }
+
+    let summaryChart, summaryCandleSeries;
+    let currentChartData = { candles: [] };
+
+    function setChartRange(range) {
+        document.querySelectorAll('.chart-range-btn').forEach(btn => {
+            btn.classList.toggle('text-white', btn.dataset.range === range);
+            btn.classList.toggle('bg-[#333]', btn.dataset.range === range);
+            btn.classList.toggle('text-gray-400', btn.dataset.range !== range);
+        });
+        if (summaryChart && currentChartData.candles.length > 0) {
+            summaryCandleSeries.setData(currentChartData.candles);
+            summaryChart.timeScale().fitContent();
+        }
+    }
+
+    async function updateSummaryChart(ticker) {
+        const container = document.getElementById('summary-chart-container');
+        if (!container) return;
+        container.innerHTML = t('loading');
+        document.getElementById('summary-chart-ticker').innerText = ticker;
+
+        try {
+            const response = await fetch(`/api/stock/${ticker}`);
+            const data = await response.json();
+            container.innerHTML = '';
+
+            if (data.error) throw new Error(data.error);
+            const priceData = data.price_history || data.candles;
+            if (!priceData || !priceData.length) throw new Error('No Data');
+
+            currentChartData.candles = priceData.map(d => ({
+                time: d.time && d.time.toString().includes('-') ? Math.floor(new Date(d.time).getTime() / 1000) : d.time,
+                open: d.open, high: d.high, low: d.low, close: d.close
+            }));
+
+            summaryChart = LightweightCharts.createChart(container, {
+                layout: { background: { color: '#121212' }, textColor: '#D1D5DB' },
+                grid: { vertLines: { color: '#2a2a2a' }, horzLines: { color: '#2a2a2a' } },
+                width: container.clientWidth,
+                height: container.clientHeight
+            });
+            summaryCandleSeries = summaryChart.addCandlestickSeries({ upColor: '#EF4444', downColor: '#3B82F6' });
+            summaryCandleSeries.setData(currentChartData.candles);
+            summaryChart.timeScale().fitContent();
+        } catch (e) { container.innerHTML = t('fail_chart'); }
+    }
+
+    function renderHoldingsTable(holdings) {
+        const tbody = document.getElementById('holdings-table-body');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+        const list = safeArray(holdings);
+        if (!list.length) {
+            const row = document.createElement('tr');
+            const td = document.createElement('td');
+            td.colSpan = 11;
+            td.className = 'p-4 text-center text-gray-500';
+            td.textContent = t('empty_generic');
+            row.appendChild(td);
+            tbody.appendChild(row);
+            return;
+        }
+        list.forEach(stock => {
+            const tr = document.createElement('tr');
+            tr.className = 'border-b border-gray-800 hover:bg-gray-800 transition-colors cursor-pointer';
+            tr.onclick = () => updateSummaryChart(stock.ticker);
+
+            const ytdVal = parseFloat(stock.ytd || 0);
+            const ytdColor = ytdVal >= 0 ? 'text-red-400' : 'text-blue-400';
+
+            tr.innerHTML = `
+                <td class="py-3 text-left font-mono text-blue-400">${stock.ticker}</td>
+                <td class="py-3 text-left font-medium text-white">${stock.name}</td>
+                <td class="py-3 text-left font-mono text-gray-400">${(stock.recommendation_price || 0).toLocaleString()}</td>
+                <td class="py-3 text-left font-mono text-white">${(stock.price || 0).toLocaleString()}</td>
+                <td class="py-3 text-left font-mono ${stock.return_pct >= 0 ? 'text-red-400' : 'text-blue-400'}">${(stock.return_pct || 0).toFixed(2)}%</td>
+                <td class="py-3 text-center font-bold text-yellow-400">${(stock.score || 0).toFixed(1)}</td>
+                <td class="py-3 text-center text-sm text-gray-300">${stock.grade || '-'}</td>
+                <td class="py-3 text-center text-sm text-gray-300">${stock.wave || '-'}</td>
+                <td class="py-3 text-center text-sm text-gray-300">${stock.sd_stage || '-'}</td>
+                <td class="py-3 text-center text-sm text-gray-300">${stock.inst_trend || '-'}</td>
+                <td class="py-3 text-center font-mono ${ytdColor}">${ytdVal.toFixed(1)}%</td>
+            `;
+            tbody.appendChild(tr);
+        });
+    }
+
+    function renderStyleBox(data) {
+        const setCell = (id, val) => { const el = document.getElementById(id); if (el) el.innerText = `${val}%`; };
+        setCell('sb-large-value', data?.large_value || 0);
+        setCell('sb-large-core', data?.large_core || 0);
+        setCell('sb-large-growth', data?.large_growth || 0);
+        setCell('sb-mid-value', data?.mid_value || 0);
+        setCell('sb-mid-core', data?.mid_core || 0);
+        setCell('sb-mid-growth', data?.mid_growth || 0);
+        setCell('sb-small-value', data?.small_value || 0);
+        setCell('sb-small-core', data?.small_core || 0);
+        setCell('sb-small-growth', data?.small_growth || 0);
+    }
+
+    async function updateRealtimePrices() {
+        // Placeholder for realtime KR updates
+    }
+</script>
