@@ -11,15 +11,23 @@ Comprehensive analysis combining:
 """
 
 import os
-import pandas as pd
-import numpy as np
-import yfinance as yf
+import sys
 import logging
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
+
+import numpy as np
+import pandas as pd
+from pathlib import Path
 from tqdm import tqdm
 import warnings
 warnings.filterwarnings('ignore')
+
+BASE_DIR = Path(__file__).resolve().parents[1]
+if str(BASE_DIR) not in sys.path:
+    sys.path.append(str(BASE_DIR))
+
+from utils.fmp_client import get_fmp_client
 
 # Logging Configuration
 logging.basicConfig(
@@ -42,6 +50,8 @@ class EnhancedSmartMoneyScreener:
     def __init__(self, data_dir: str = '.'):
         self.data_dir = data_dir
         self.output_file = os.path.join(data_dir, 'smart_money_picks_v2.csv')
+
+        self.client = get_fmp_client()
         
         # Load analysis data
         self.volume_df = None
@@ -49,8 +59,16 @@ class EnhancedSmartMoneyScreener:
         self.etf_df = None
         self.prices_df = None
         
-        # Cache for yfinance data
-        self.yf_cache = {}
+        # Cache for FMP data
+        self.fmp_cache = {
+            "history": {},
+            "profile": {},
+            "quote": {},
+            "metrics": {},
+            "ratios": {},
+            "ratings": {},
+            "targets": {},
+        }
         
         # S&P 500 benchmark data
         self.spy_data = None
@@ -83,25 +101,95 @@ class EnhancedSmartMoneyScreener:
             
             # Load SPY for relative strength
             logger.info("📈 Loading SPY benchmark data...")
-            spy = yf.Ticker("SPY")
-            self.spy_data = spy.history(period="3mo")
+            self.spy_data = self._get_history("SPY", days=120)
             
             return True
             
         except Exception as e:
             logger.error(f"❌ Error loading data: {e}")
             return False
+
+    def _get_history(self, ticker: str, days: int = 180) -> pd.DataFrame:
+        cache_key = (ticker, days)
+        cached = self.fmp_cache["history"].get(cache_key)
+        if cached is not None:
+            return cached
+        end_date = datetime.utcnow()
+        start_date = end_date - timedelta(days=days)
+        payload = self.client.historical_price_full(
+            ticker,
+            from_date=start_date.strftime("%Y-%m-%d"),
+            to_date=end_date.strftime("%Y-%m-%d"),
+        )
+        hist = pd.DataFrame(payload.get("historical") or [])
+        if not hist.empty:
+            hist["date"] = pd.to_datetime(hist["date"], errors="coerce")
+            hist = hist.dropna(subset=["date"]).sort_values("date")
+        self.fmp_cache["history"][cache_key] = hist
+        return hist
+
+    def _get_profile(self, ticker: str) -> Dict:
+        cached = self.fmp_cache["profile"].get(ticker)
+        if cached is not None:
+            return cached
+        profiles = self.client.profile(ticker)
+        profile = profiles[0] if profiles else {}
+        self.fmp_cache["profile"][ticker] = profile
+        return profile
+
+    def _get_quote(self, ticker: str) -> Dict:
+        cached = self.fmp_cache["quote"].get(ticker)
+        if cached is not None:
+            return cached
+        quotes = self.client.quote([ticker])
+        quote = quotes[0] if quotes else {}
+        self.fmp_cache["quote"][ticker] = quote
+        return quote
+
+    def _get_metrics(self, ticker: str) -> Dict:
+        cached = self.fmp_cache["metrics"].get(ticker)
+        if cached is not None:
+            return cached
+        metrics = self.client.key_metrics_ttm(ticker)
+        item = metrics[0] if metrics else {}
+        self.fmp_cache["metrics"][ticker] = item
+        return item
+
+    def _get_ratios(self, ticker: str) -> Dict:
+        cached = self.fmp_cache["ratios"].get(ticker)
+        if cached is not None:
+            return cached
+        ratios = self.client.ratios_ttm(ticker)
+        item = ratios[0] if ratios else {}
+        self.fmp_cache["ratios"][ticker] = item
+        return item
+
+    def _get_ratings(self, ticker: str) -> Dict:
+        cached = self.fmp_cache["ratings"].get(ticker)
+        if cached is not None:
+            return cached
+        ratings = self.client.ratings_snapshot(ticker)
+        item = ratings[0] if ratings else {}
+        self.fmp_cache["ratings"][ticker] = item
+        return item
+
+    def _get_targets(self, ticker: str) -> Dict:
+        cached = self.fmp_cache["targets"].get(ticker)
+        if cached is not None:
+            return cached
+        targets = self.client.price_target_consensus(ticker)
+        item = targets[0] if targets else {}
+        self.fmp_cache["targets"][ticker] = item
+        return item
     
     def get_technical_analysis(self, ticker: str) -> Dict:
         """Calculate technical indicators"""
         try:
-            stock = yf.Ticker(ticker)
-            hist = stock.history(period="6mo")
-            
-            if len(hist) < 50:
+            hist = self._get_history(ticker, days=200)
+            if hist.empty or len(hist) < 50:
                 return self._default_technical()
-            
-            close = hist['Close']
+
+            close = hist['close']
             
             # RSI (14-day)
             delta = close.diff()
@@ -204,27 +292,28 @@ class EnhancedSmartMoneyScreener:
     def get_fundamental_analysis(self, ticker: str) -> Dict:
         """Get fundamental/valuation metrics"""
         try:
-            stock = yf.Ticker(ticker)
-            info = stock.info
-            
+            profile = self._get_profile(ticker)
+            metrics = self._get_metrics(ticker)
+            ratios = self._get_ratios(ticker)
+
             # Valuation
-            pe_ratio = info.get('trailingPE', 0) or 0
-            forward_pe = info.get('forwardPE', 0) or 0
-            pb_ratio = info.get('priceToBook', 0) or 0
-            
+            pe_ratio = ratios.get('peRatioTTM') or ratios.get('priceEarningsRatioTTM') or profile.get('pe') or 0
+            forward_pe = profile.get('forwardPE') or ratios.get('forwardPERatioTTM') or 0
+            pb_ratio = ratios.get('pbRatioTTM') or ratios.get('priceToBookRatioTTM') or profile.get('priceToBook') or 0
+
             # Growth
-            revenue_growth = info.get('revenueGrowth', 0) or 0
-            earnings_growth = info.get('earningsGrowth', 0) or 0
-            
+            revenue_growth = metrics.get('revenueGrowthTTM') or metrics.get('revenueGrowth') or 0
+            earnings_growth = metrics.get('netIncomeGrowthTTM') or metrics.get('netIncomeGrowth') or 0
+
             # Profitability
-            profit_margin = info.get('profitMargins', 0) or 0
-            roe = info.get('returnOnEquity', 0) or 0
-            
+            profit_margin = ratios.get('netProfitMarginTTM') or ratios.get('profitMarginTTM') or metrics.get('netProfitMarginTTM') or 0
+            roe = ratios.get('roeTTM') or ratios.get('returnOnEquityTTM') or 0
+
             # Market Cap
-            market_cap = info.get('marketCap', 0) or 0
-            
+            market_cap = profile.get('mktCap') or profile.get('marketCap') or 0
+
             # Dividend
-            dividend_yield = info.get('dividendYield', 0) or 0
+            dividend_yield = profile.get('dividendYield') or ratios.get('dividendYieldTTM') or 0
             
             # Fundamental Score (0-100)
             fund_score = 50
@@ -299,18 +388,25 @@ class EnhancedSmartMoneyScreener:
     def get_analyst_ratings(self, ticker: str) -> Dict:
         """Get analyst consensus and target price"""
         try:
-            stock = yf.Ticker(ticker)
-            info = stock.info
-            
+            profile = self._get_profile(ticker)
+            quote = self._get_quote(ticker)
+            ratings = self._get_ratings(ticker)
+            targets = self._get_targets(ticker)
+
             # Get company name
-            company_name = info.get('longName', '') or info.get('shortName', '') or ticker
-            
-            current_price = info.get('currentPrice', 0) or info.get('regularMarketPrice', 0) or 0
-            target_price = info.get('targetMeanPrice', 0) or 0
-            
+            company_name = profile.get('companyName', '') or profile.get('name', '') or ticker
+
+            current_price = quote.get('price') or profile.get('price') or 0
+            target_price = (
+                targets.get('targetMean')
+                or targets.get('targetConsensus')
+                or targets.get('targetMedian')
+                or 0
+            )
+
             # Recommendation
-            recommendation = info.get('recommendationKey', 'none')
-            num_analysts = info.get('numberOfAnalystOpinions', 0) or 0
+            raw_rec = ratings.get('rating') or ratings.get('ratingRecommendation') or ratings.get('recommendation') or 'none'
+            recommendation = str(raw_rec).strip()
             
             # Upside potential
             if current_price > 0 and target_price > 0:
@@ -326,7 +422,20 @@ class EnhancedSmartMoneyScreener:
                 'strongBuy': 25, 'buy': 20, 'hold': 0,
                 'sell': -15, 'strongSell': -25
             }
-            analyst_score += rec_map.get(recommendation, 0)
+            rec_key = recommendation.lower().replace(" ", "")
+            if "strongbuy" in rec_key:
+                norm_rec = "strongBuy"
+            elif "strongsell" in rec_key:
+                norm_rec = "strongSell"
+            elif "buy" in rec_key:
+                norm_rec = "buy"
+            elif "sell" in rec_key:
+                norm_rec = "sell"
+            elif "hold" in rec_key or "neutral" in rec_key:
+                norm_rec = "hold"
+            else:
+                norm_rec = "hold"
+            analyst_score += rec_map.get(norm_rec, 0)
             
             # Upside contribution
             if upside > 30: analyst_score += 20
@@ -342,7 +451,7 @@ class EnhancedSmartMoneyScreener:
                 'current_price': round(current_price, 2),
                 'target_price': round(target_price, 2) if target_price else 'N/A',
                 'upside_pct': round(upside, 1),
-                'recommendation': recommendation,
+                'recommendation': norm_rec,
                 'analyst_score': analyst_score
             }
             
@@ -360,19 +469,17 @@ class EnhancedSmartMoneyScreener:
         try:
             if self.spy_data is None or len(self.spy_data) < 20:
                 return {'rs_20d': 0, 'rs_60d': 0, 'rs_score': 50}
-            
-            stock = yf.Ticker(ticker)
-            hist = stock.history(period="3mo")
-            
-            if len(hist) < 20:
+
+            hist = self._get_history(ticker, days=120)
+            if hist.empty or len(hist) < 20:
                 return {'rs_20d': 0, 'rs_60d': 0, 'rs_score': 50}
             
             # Calculate returns
-            stock_return_20d = (hist['Close'].iloc[-1] / hist['Close'].iloc[-21] - 1) * 100 if len(hist) >= 21 else 0
-            stock_return_60d = (hist['Close'].iloc[-1] / hist['Close'].iloc[0] - 1) * 100
-            
-            spy_return_20d = (self.spy_data['Close'].iloc[-1] / self.spy_data['Close'].iloc[-21] - 1) * 100 if len(self.spy_data) >= 21 else 0
-            spy_return_60d = (self.spy_data['Close'].iloc[-1] / self.spy_data['Close'].iloc[0] - 1) * 100
+            stock_return_20d = (hist['close'].iloc[-1] / hist['close'].iloc[-21] - 1) * 100 if len(hist) >= 21 else 0
+            stock_return_60d = (hist['close'].iloc[-1] / hist['close'].iloc[0] - 1) * 100
+
+            spy_return_20d = (self.spy_data['close'].iloc[-1] / self.spy_data['close'].iloc[-21] - 1) * 100 if len(self.spy_data) >= 21 else 0
+            spy_return_60d = (self.spy_data['close'].iloc[-1] / self.spy_data['close'].iloc[0] - 1) * 100
             
             rs_20d = stock_return_20d - spy_return_20d
             rs_60d = stock_return_60d - spy_return_60d

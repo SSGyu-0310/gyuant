@@ -2,18 +2,26 @@
 # -*- coding: utf-8 -*-
 """
 US Stock Daily Prices Collection Script
-Collects daily price data for NASDAQ and S&P 500 stocks using yfinance
+Collects daily price data for NASDAQ and S&P 500 stocks using FMP
 Similar to create_complete_daily_prices.py for Korean stocks
 """
 
 import os
-import pandas as pd
-import numpy as np
-import yfinance as yf
+import sys
 import logging
 from datetime import datetime, timedelta
 from typing import Dict, List
+
+import numpy as np
+import pandas as pd
+from pathlib import Path
 from tqdm import tqdm
+
+BASE_DIR = Path(__file__).resolve().parents[1]
+if str(BASE_DIR) not in sys.path:
+    sys.path.append(str(BASE_DIR))
+
+from utils.fmp_client import get_fmp_client
 
 # Logging Configuration
 logging.basicConfig(
@@ -28,6 +36,8 @@ class USStockDailyPricesCreator:
         self.data_dir = os.getenv('DATA_DIR', '.')
         self.output_dir = self.data_dir
         os.makedirs(self.output_dir, exist_ok=True)
+
+        self.client = get_fmp_client()
         
         # Data file paths
         self.prices_file = os.path.join(self.output_dir, 'us_daily_prices.csv')
@@ -100,7 +110,7 @@ class USStockDailyPricesCreator:
         for ticker in sp500_tickers:
             stocks.append({
                 'ticker': ticker,
-                'name': ticker,  # Will be fetched from yfinance
+                'name': ticker,  # Name will be enriched later if needed
                 'sector': 'N/A',
                 'industry': 'N/A',
                 'market': 'S&P500'
@@ -155,31 +165,36 @@ class USStockDailyPricesCreator:
     def download_stock_data(self, ticker: str, start_date: datetime, end_date: datetime) -> pd.DataFrame:
         """Download daily price data for a single stock"""
         try:
-            stock = yf.Ticker(ticker)
-            hist = stock.history(start=start_date, end=end_date)
-            
+            payload = self.client.historical_price_full(
+                ticker,
+                from_date=start_date.strftime("%Y-%m-%d"),
+                to_date=end_date.strftime("%Y-%m-%d"),
+            )
+            hist = pd.DataFrame(payload.get("historical") or [])
             if hist.empty:
                 return pd.DataFrame()
-            
-            hist = hist.reset_index()
+
+            hist['date'] = pd.to_datetime(hist['date'], errors='coerce')
+            hist = hist.dropna(subset=['date']).sort_values('date')
             hist['ticker'] = ticker
-            
-            # Rename columns to match Korean stock format
+
+            # Normalize columns
             hist = hist.rename(columns={
-                'Date': 'date',
-                'Open': 'open',
-                'High': 'high',
-                'Low': 'low',
-                'Close': 'current_price',
-                'Volume': 'volume'
+                'open': 'open',
+                'high': 'high',
+                'low': 'low',
+                'close': 'current_price',
+                'volume': 'volume'
             })
-            
+
+            hist['close'] = hist['current_price']
+
             # Calculate change and change_rate
             hist['change'] = hist['current_price'].diff()
             hist['change_rate'] = hist['current_price'].pct_change() * 100
             
             # Select required columns
-            cols = ['ticker', 'date', 'open', 'high', 'low', 'current_price', 'volume', 'change', 'change_rate']
+            cols = ['ticker', 'date', 'open', 'high', 'low', 'current_price', 'close', 'volume', 'change', 'change_rate']
             hist = hist[cols]
             
             return hist

@@ -12,13 +12,13 @@ import traceback
 import uuid
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from typing import Dict, List, Any, Tuple
+from typing import Dict, List, Any, Tuple, Optional
 
 import numpy as np
 import pandas as pd
-import yfinance as yf
 from flask import Flask, jsonify, render_template, request, g
 
+from utils.fmp_client import get_data_provider, get_fmp_client, map_symbol, map_symbols
 from utils.logger import setup_logger
 from utils.pipeline_utils import ensure_contracts
 from utils.perf_utils import cache_get_or_set, get_perf_stats, get_request_cache, perf_env_threads_enabled, perf_max_workers
@@ -47,12 +47,21 @@ LANG_WHITELIST = {"ko", "en"}
 AI_SUMMARY_CACHE: Dict[str, Dict[str, Any]] = {}
 AI_SUMMARY_LOCKS: Dict[str, threading.Lock] = {}
 AI_LAST_REGEN: Dict[str, datetime] = {}
+US_PORTFOLIO_CACHE: Dict[str, Any] = {"payload": None, "expires_at": None}
+US_PORTFOLIO_TTL_SEC = int(os.getenv("US_PORTFOLIO_TTL_SEC", "60"))
 OPT_PREMIUM_HIGH_USD = float(os.getenv("OPT_PREMIUM_HIGH_USD", "1000000"))
 OPT_PREMIUM_MID_USD = float(os.getenv("OPT_PREMIUM_MID_USD", "300000"))
 OPT_VOL_OI_RATIO_HIGH = float(os.getenv("OPT_VOL_OI_RATIO_HIGH", "5"))
 OPT_VOL_OI_RATIO_MID = float(os.getenv("OPT_VOL_OI_RATIO_MID", "3"))
 OPT_VOLUME_LARGE = float(os.getenv("OPT_VOLUME_LARGE", "5000"))
 OPT_IV_HIGH = float(os.getenv("OPT_IV_HIGH", "80"))
+
+
+def _fmp() -> "FMPClient":
+    provider = get_data_provider()
+    if provider != "FMP":
+        logger.warning(f"DATA_PROVIDER={provider} not supported; defaulting to FMP")
+    return get_fmp_client()
 
 
 # ------------- Error Handling -------------
@@ -231,6 +240,42 @@ def _sanitize_summary(text: str, max_chars: int) -> Tuple[str, bool, int]:
     return safe_text, truncated, original_len
 
 
+def _parse_fmp_date(date_str: str) -> datetime:
+    try:
+        return datetime.fromisoformat(date_str)
+    except Exception:
+        try:
+            return datetime.strptime(date_str, "%Y-%m-%d")
+        except Exception:
+            return datetime.utcnow()
+
+
+def _fmp_hist_to_df(payload: Dict[str, Any]) -> pd.DataFrame:
+    hist = payload.get("historical") if isinstance(payload, dict) else None
+    if not hist:
+        return pd.DataFrame()
+    df = pd.DataFrame(hist)
+    if df.empty:
+        return df
+    if "date" in df.columns:
+        df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    df = df.dropna(subset=["date"]).sort_values("date")
+    return df
+
+
+def _quote_lookup(quote_map: Dict[str, Dict[str, Any]], symbol: str) -> Optional[Dict[str, Any]]:
+    mapped = map_symbol(symbol)
+    candidates = [symbol, mapped]
+    if symbol.startswith("^"):
+        candidates.append(symbol.lstrip("^"))
+    if mapped.startswith("^"):
+        candidates.append(mapped.lstrip("^"))
+    for cand in candidates:
+        if cand in quote_map:
+            return quote_map[cand]
+    return None
+
+
 def _generate_ai_summary(ticker: str, lang: str) -> Dict[str, Any]:
     """Load AI summary from stored file (placeholder for real generation)."""
     ensure_contracts(["ai_summaries"])
@@ -272,7 +317,7 @@ def _before_request():
     g.request_id = rid
     g._start_time = time.perf_counter()
     g._req_cache = {}
-    g._perf_stats = {"cache_hits": 0, "cache_misses": 0, "yf_calls": 0, "yf_batches": 0, "parallel_tasks": 0}
+    g._perf_stats = {"cache_hits": 0, "cache_misses": 0, "fmp_calls": 0, "fmp_batches": 0, "parallel_tasks": 0}
 
 
 @app.after_request
@@ -306,8 +351,8 @@ def _after_request(response):
             "event": "perf_summary",
             "request_id": rid,
             "path": request.path,
-            "yfinance_calls": stats.get("yf_calls", 0),
-            "yfinance_batched": stats.get("yf_batches", 0),
+            "fmp_calls": stats.get("fmp_calls", 0),
+            "fmp_batched": stats.get("fmp_batches", 0),
             "cache_hits": stats.get("cache_hits", 0),
             "cache_misses": stats.get("cache_misses", 0),
             "parallel_tasks": stats.get("parallel_tasks", 0),
@@ -327,10 +372,8 @@ def get_sector(ticker: str) -> str:
     cache_key = ("sector_lookup", ticker)
     def loader():
         try:
-            stock = yf.Ticker(ticker)
-            info = stock.info or {}
-            get_perf_stats()["yf_calls"] += 1
-            sector = info.get('sector', '')
+            profiles = _fmp().profile(ticker)
+            sector = (profiles[0].get('sector') if profiles else '') or ''
             sector_short_map = {
                 'Technology': 'Tech', 'Information Technology': 'Tech',
                 'Healthcare': 'Health', 'Health Care': 'Health',
@@ -375,7 +418,7 @@ def safe_float(val, default: float = 0.0) -> float:
         return default
 
 
-def kr_to_yf_ticker(ticker: str) -> str:
+def kr_to_fmp_ticker(ticker: str) -> str:
     t = str(ticker).zfill(6)
     return f"{t}.KS"
 
@@ -388,24 +431,20 @@ def fetch_price_map(tickers: List[str]) -> Dict[str, float]:
     def loader():
         started = time.perf_counter()
         try:
-            df = yf.download(tickers, period='5d', progress=False, threads=False, group_by='ticker')
-            get_perf_stats()["yf_calls"] += 1
-            get_perf_stats()["yf_batches"] += 1
-            if df.empty:
-                return {}
-
-            closes = df['Close']
+            mapped = {t: map_symbol(t) for t in tickers}
+            quotes = _fmp().quote(list(mapped.values()))
             prices: Dict[str, float] = {}
-            if isinstance(closes, pd.Series):
-                series = closes.dropna()
-                if not series.empty:
-                    prices[tickers[0]] = round(float(series.iloc[-1]), 2)
-            else:
-                for t in tickers:
-                    if t in closes.columns:
-                        series = closes[t].dropna()
-                        if not series.empty:
-                            prices[t] = round(float(series.iloc[-1]), 2)
+            quote_map = {q.get("symbol"): q for q in quotes if isinstance(q, dict)}
+            for original, mapped_symbol in mapped.items():
+                q = _quote_lookup(quote_map, mapped_symbol)
+                if not q:
+                    continue
+                price = q.get("price")
+                if price is None:
+                    price = q.get("previousClose")
+                if price is None:
+                    continue
+                prices[original] = round(float(price), 2)
             return prices
         except Exception as e:
             logger.warning(f"Price fetch failed: {e}")
@@ -580,22 +619,25 @@ def get_kr_performance():
 def get_kr_market_status():
     try:
         proxy_tickers = [('^KS11', 'KOSPI'), ('^KQ11', 'KOSDAQ')]
-        for yf_ticker, name in proxy_tickers:
+        for proxy_symbol, name in proxy_tickers:
             try:
-                hist = yf.Ticker(yf_ticker).history(period='1y')
+                end_date = datetime.utcnow().date().isoformat()
+                start_date = (datetime.utcnow() - timedelta(days=400)).date().isoformat()
+                payload = _fmp().historical_price_full(proxy_symbol, from_date=start_date, to_date=end_date)
+                hist = _fmp_hist_to_df(payload)
                 if hist.empty or len(hist) < 200:
                     continue
-                hist['MA50'] = hist['Close'].rolling(50).mean()
-                hist['MA200'] = hist['Close'].rolling(200).mean()
+                hist['MA50'] = hist['close'].rolling(50).mean()
+                hist['MA200'] = hist['close'].rolling(200).mean()
                 last = hist.iloc[-1]
-                status = 'BULL' if last['Close'] > last['MA200'] else 'NEUTRAL'
+                status = 'BULL' if last['close'] > last['MA200'] else 'NEUTRAL'
                 return jsonify({
                     'status': status,
-                    'score': round((last['Close'] / last['MA200'] - 1) * 100, 2),
-                    'current_price': round(float(last['Close']), 2),
+                    'score': round((last['close'] / last['MA200'] - 1) * 100, 2),
+                    'current_price': round(float(last['close']), 2),
                     'ma200': round(float(last['MA200']), 2),
-                    'date': last.name.strftime('%Y-%m-%d'),
-                    'symbol': yf_ticker,
+                    'date': last['date'].strftime('%Y-%m-%d') if hasattr(last['date'], 'strftime') else str(last['date'])[:10],
+                    'symbol': proxy_symbol,
                     'name': name
                 })
             except Exception:
@@ -611,21 +653,40 @@ def get_portfolio_data():
     """KR portfolio summary (fallback data)."""
     try:
         indices = []
-        for ticker, name in [('^KS11', 'KOSPI'), ('^KQ11', 'KOSDAQ'), ('KRW=X', 'USD/KRW')]:
+        indices_map = {'^KS11': 'KOSPI', '^KQ11': 'KOSDAQ', 'KRW=X': 'USD/KRW'}
+        batch_symbols = [sym for sym in indices_map.keys() if not sym.startswith("^")]
+        quote_map = {}
+        if batch_symbols:
             try:
-                hist = yf.Ticker(ticker).history(period='5d')
-                if not hist.empty and len(hist) >= 2:
-                    current = float(hist['Close'].iloc[-1])
-                    prev = float(hist['Close'].iloc[-2])
-                    change = current - prev
-                    change_pct = (change / prev) * 100 if prev else 0
-                    indices.append({
-                        'name': name,
-                        'price': f"{current:,.2f}",
-                        'change': f"{change:+,.2f}",
-                        'change_pct': round(change_pct, 2),
-                        'color': 'red' if change < 0 else 'blue'
-                    })
+                quotes = _fmp().quote(batch_symbols)
+                quote_map.update({q.get("symbol"): q for q in quotes if isinstance(q, dict)})
+            except Exception as e:
+                logger.warning(f"KR batch quote failed: {e}")
+        for sym in [s for s in indices_map.keys() if s.startswith("^")]:
+            try:
+                quotes = _fmp().quote([sym])
+                if quotes:
+                    quote_map[quotes[0].get("symbol")] = quotes[0]
+            except Exception as e:
+                logger.warning(f"KR index quote failed {sym}: {e}")
+        for ticker, name in indices_map.items():
+            try:
+                quote = _quote_lookup(quote_map, ticker)
+                if not quote:
+                    continue
+                current = quote.get("price")
+                prev = quote.get("previousClose")
+                if current is None or prev is None:
+                    continue
+                change = float(current) - float(prev)
+                change_pct = (change / prev) * 100 if prev else 0
+                indices.append({
+                    'name': name,
+                    'price': f"{float(current):,.2f}",
+                    'change': f"{change:+,.2f}",
+                    'change_pct': round(change_pct, 2),
+                    'color': 'red' if change < 0 else 'blue'
+                })
             except Exception:
                 continue
 
@@ -649,6 +710,11 @@ def get_portfolio_data():
 def get_us_portfolio_data():
     try:
         ensure_contracts(["us_prices"])
+        now = datetime.now(timezone.utc)
+        cached_payload = US_PORTFOLIO_CACHE.get("payload")
+        cached_expires = US_PORTFOLIO_CACHE.get("expires_at")
+        if cached_payload and cached_expires and cached_expires > now:
+            return jsonify(cached_payload)
         market_indices = []
         indices_map = {
             '^DJI': 'Dow Jones', '^GSPC': 'S&P 500', '^IXIC': 'NASDAQ',
@@ -656,31 +722,71 @@ def get_us_portfolio_data():
             'CL=F': 'Crude Oil', 'BTC-USD': 'Bitcoin', '^TNX': '10Y Treasury',
             'DX-Y.NYB': 'Dollar Index', 'KRW=X': 'USD/KRW'
         }
+        quote_tickers = [t for t in indices_map.keys() if t != "^TNX"]
+        batch_symbols = [sym for sym in quote_tickers if not sym.startswith("^")]
+        quote_map = {}
+        if batch_symbols:
+            quotes = _fmp().quote(batch_symbols)
+            quote_map.update({q.get("symbol"): q for q in quotes if isinstance(q, dict)})
+        for sym in [s for s in quote_tickers if s.startswith("^")]:
+            try:
+                quotes = _fmp().quote([sym])
+                if quotes:
+                    quote_map[quotes[0].get("symbol")] = quotes[0]
+            except Exception as e:
+                logger.warning(f"US index quote failed {sym}: {e}")
 
         for ticker, name in indices_map.items():
             try:
-                stock = yf.Ticker(ticker)
-                hist = stock.history(period='5d')
-                if not hist.empty and len(hist) >= 2:
-                    current = float(hist['Close'].iloc[-1])
-                    prev = float(hist['Close'].iloc[-2])
-                    change = current - prev
-                    change_pct = (change / prev) * 100 if prev else 0
-                    market_indices.append({
-                        'name': name,
-                        'price': f"{current:,.2f}",
-                        'change': f"{change:+,.2f}",
-                        'change_pct': round(change_pct, 2),
-                        'color': 'green' if change >= 0 else 'red'
-                    })
+                if ticker == "^TNX":
+                    rates = _fmp().treasury_rates()
+                    if rates:
+                        latest = rates[0]
+                        current = latest.get("10Y") or latest.get("10y") or latest.get("tenYear")
+                        if current is None:
+                            continue
+                        prev = None
+                        if len(rates) > 1:
+                            prev = rates[1].get("10Y") or rates[1].get("10y") or rates[1].get("tenYear")
+                        change = float(current) - float(prev or current)
+                        change_pct = (change / prev) * 100 if prev else 0
+                        market_indices.append({
+                            'name': name,
+                            'price': f"{float(current):,.2f}",
+                            'change': f"{change:+,.2f}",
+                            'change_pct': round(change_pct, 2),
+                            'color': 'green' if change >= 0 else 'red'
+                        })
+                    continue
+
+                mapped = map_symbol(ticker)
+                quote = _quote_lookup(quote_map, mapped)
+                if not quote:
+                    continue
+                current = quote.get("price")
+                prev = quote.get("previousClose")
+                if current is None or prev is None:
+                    continue
+                change = float(current) - float(prev)
+                change_pct = (change / prev) * 100 if prev else 0
+                market_indices.append({
+                    'name': name,
+                    'price': f"{float(current):,.2f}",
+                    'change': f"{change:+,.2f}",
+                    'change_pct': round(change_pct, 2),
+                    'color': 'green' if change >= 0 else 'red'
+                })
             except Exception as e:
                 logger.debug(f"Index fetch failed {ticker}: {e}")
 
-        return jsonify({
+        payload = {
             'market_indices': market_indices,
             'top_holdings': [],
             'style_box': {}
-        })
+        }
+        US_PORTFOLIO_CACHE["payload"] = payload
+        US_PORTFOLIO_CACHE["expires_at"] = now + timedelta(seconds=max(10, US_PORTFOLIO_TTL_SEC))
+        return jsonify(payload)
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
@@ -748,12 +854,13 @@ def get_us_smart_money():
         if current_file.exists():
             snapshot = load_json_file(current_file, {})
             picks = snapshot.get('picks', [])
-            return jsonify({
-                'analysis_date': snapshot.get('analysis_date', ''),
-                'analysis_timestamp': snapshot.get('analysis_timestamp', ''),
-                'top_picks': picks,
-                'summary': snapshot.get('summary', {'total_analyzed': len(picks)})
-            })
+            if picks:
+                return jsonify({
+                    'analysis_date': snapshot.get('analysis_date', ''),
+                    'analysis_timestamp': snapshot.get('analysis_timestamp', ''),
+                    'top_picks': picks,
+                    'summary': snapshot.get('summary', {'total_analyzed': len(picks)})
+                })
 
         csv_path = US_DIR / 'smart_money_picks_v2.csv'
         if csv_path.exists():
@@ -841,17 +948,30 @@ def get_us_stock_chart(ticker):
         period = request.args.get('period', '1y')
         if period not in ['1mo', '3mo', '6mo', '1y', '2y', '5y', 'max']:
             period = '1y'
-        hist = yf.Ticker(ticker).history(period=period)
+        period_days = {
+            "1mo": 30,
+            "3mo": 90,
+            "6mo": 180,
+            "1y": 365,
+            "2y": 730,
+            "5y": 1825,
+            "max": 3650,
+        }
+        days = period_days.get(period, 365)
+        end_date = datetime.utcnow().date()
+        start_date = (end_date - timedelta(days=days)).isoformat()
+        payload = _fmp().historical_price_full(ticker, from_date=start_date, to_date=end_date.isoformat())
+        hist = _fmp_hist_to_df(payload)
         if hist.empty:
             return jsonify({'error': f'No data found for {ticker}'}), 404
 
         candles = [{
-            'time': int(idx.timestamp()),
-            'open': round(row['Open'], 2),
-            'high': round(row['High'], 2),
-            'low': round(row['Low'], 2),
-            'close': round(row['Close'], 2)
-        } for idx, row in hist.iterrows()]
+            'time': int(row['date'].to_pydatetime().timestamp()) if hasattr(row['date'], "to_pydatetime") else int(_parse_fmp_date(str(row['date'])).timestamp()),
+            'open': round(float(row['open']), 2),
+            'high': round(float(row['high']), 2),
+            'low': round(float(row['low']), 2),
+            'close': round(float(row['close']), 2)
+        } for _, row in hist.iterrows()]
 
         return jsonify({'ticker': ticker, 'period': period, 'candles': candles})
     except Exception as e:
@@ -944,24 +1064,35 @@ def get_us_macro_analysis():
             def load_live():
                 started = time.perf_counter()
                 try:
-                    df = yf.download(list(live_tickers.values()), period='5d', progress=False, threads=False)
-                    get_perf_stats()["yf_calls"] += 1
-                    get_perf_stats()["yf_batches"] += 1
-                    return df
+                    mapped = map_symbols(list(live_tickers.values()))
+                    return _fmp().quote(mapped)
                 finally:
                     _log_perf_component("macro_live", started)
 
-            live = cache_get_or_set(cache_key, load_live)
-            if not live.empty:
-                closes = live['Close']
-                for name, ticker in live_tickers.items():
-                    try:
-                        if isinstance(closes, pd.DataFrame) and ticker in closes.columns:
-                            macro_indicators[name] = {'value': round(float(closes[ticker].dropna().iloc[-1]), 2)}
-                        elif isinstance(closes, pd.Series):
-                            macro_indicators[name] = {'value': round(float(closes.dropna().iloc[-1]), 2)}
-                    except Exception:
+            quotes = cache_get_or_set(cache_key, load_live)
+            quote_map = {q.get("symbol"): q for q in (quotes or []) if isinstance(q, dict)}
+            for name, ticker in live_tickers.items():
+                try:
+                    mapped = map_symbol(ticker)
+                    quote = _quote_lookup(quote_map, mapped)
+                    if not quote:
                         continue
+                    price = quote.get("price")
+                    if price is None:
+                        continue
+                    macro_indicators[name] = {'value': round(float(price), 2)}
+                except Exception:
+                    continue
+            try:
+                rates = _fmp().treasury_rates()
+                if rates:
+                    latest = rates[0]
+                    if latest.get("10Y") is not None:
+                        macro_indicators["10Y"] = {"value": round(float(latest.get("10Y")), 2)}
+                    if latest.get("2Y") is not None:
+                        macro_indicators["2Y"] = {"value": round(float(latest.get("2Y")), 2)}
+            except Exception:
+                pass
         except Exception:
             pass
 
@@ -1496,19 +1627,20 @@ def get_us_ai_summary(ticker):
 def get_stock_detail(ticker):
     t = str(ticker).zfill(6)
     try:
-        yf_ticker = kr_to_yf_ticker(t)
-        stock = yf.Ticker(yf_ticker)
-        hist = stock.history(period='1y')
+        fmp_ticker = kr_to_fmp_ticker(t)
+        end_date = datetime.utcnow().date()
+        start_date = (end_date - timedelta(days=365)).isoformat()
+        payload = _fmp().historical_price_full(fmp_ticker, from_date=start_date, to_date=end_date.isoformat())
+        hist = _fmp_hist_to_df(payload)
         if hist.empty:
             return jsonify({'error': 'No data'}), 404
-        hist = hist.reset_index()
         price_history = [{
-            'time': row['Date'].strftime('%Y-%m-%d') if hasattr(row['Date'], 'strftime') else str(row['Date']).split(' ')[0],
-            'open': safe_float(row['Open']),
-            'high': safe_float(row['High']),
-            'low': safe_float(row['Low']),
-            'close': safe_float(row['Close']),
-            'volume': int(row.get('Volume', 0))
+            'time': row['date'].strftime('%Y-%m-%d') if hasattr(row['date'], 'strftime') else str(row['date']).split(' ')[0],
+            'open': safe_float(row['open']),
+            'high': safe_float(row['high']),
+            'low': safe_float(row['low']),
+            'close': safe_float(row['close']),
+            'volume': int(row.get('volume', 0))
         } for _, row in hist.iterrows()]
 
         return jsonify({
@@ -1614,41 +1746,39 @@ def get_realtime_prices():
         if not tickers:
             return jsonify({})
 
-        yf_tickers = []
+        fmp_tickers = []
         ticker_map = {}
         for t in tickers:
             t_str = str(t)
-            yf_t = kr_to_yf_ticker(t_str) if t_str.isdigit() and len(t_str) <= 6 else t_str
-            yf_tickers.append(yf_t)
-            ticker_map[yf_t] = t_str
+            fmp_t = kr_to_fmp_ticker(t_str) if t_str.isdigit() and len(t_str) <= 6 else map_symbol(t_str)
+            fmp_tickers.append(fmp_t)
+            ticker_map[fmp_t] = t_str
 
-        df = yf.download(yf_tickers, period='1d', interval='1m', progress=False, threads=True)
-        if df.empty:
+        quotes = _fmp().quote(fmp_tickers)
+        if not quotes:
             return jsonify({})
-        df = df.ffill()
 
+        quote_map = {q.get("symbol"): q for q in quotes if isinstance(q, dict)}
         prices = {}
-        if len(yf_tickers) == 1:
-            row = df.iloc[-1]
-            prices[tickers[0]] = {
-                'current': safe_float(row['Close']),
-                'open': safe_float(row['Open']),
-                'high': safe_float(row['High']),
-                'low': safe_float(row['Low']),
-                'date': df.index[-1].strftime('%Y-%m-%d')
+        for mapped_symbol, orig in ticker_map.items():
+            q = _quote_lookup(quote_map, mapped_symbol)
+            if not q:
+                continue
+            price = q.get("price")
+            if price is None:
+                continue
+            ts = q.get("timestamp")
+            if ts:
+                date_str = datetime.fromtimestamp(int(ts)).strftime('%Y-%m-%d')
+            else:
+                date_str = datetime.utcnow().strftime('%Y-%m-%d')
+            prices[orig] = {
+                'current': safe_float(price),
+                'open': safe_float(q.get("open")),
+                'high': safe_float(q.get("dayHigh")),
+                'low': safe_float(q.get("dayLow")),
+                'date': date_str
             }
-        else:
-            last_row = df.iloc[-1]
-            for yf_t in yf_tickers:
-                orig = ticker_map.get(yf_t)
-                if orig and yf_t in df['Close'].columns:
-                    prices[orig] = {
-                        'current': safe_float(df['Close'][yf_t]),
-                        'open': safe_float(df['Open'][yf_t]),
-                        'high': safe_float(df['High'][yf_t]),
-                        'low': safe_float(df['Low'][yf_t]),
-                        'date': last_row.name.strftime('%Y-%m-%d') if hasattr(last_row, 'name') else datetime.utcnow().strftime('%Y-%m-%d')
-                    }
 
         return jsonify(prices)
     except Exception as e:
@@ -1675,18 +1805,22 @@ def get_technical_indicators(ticker):
         from ta.trend import MACD
         from ta.volatility import BollingerBands
 
-        hist = yf.Ticker(ticker).history(period='1y').reset_index()
+        end_date = datetime.utcnow().date()
+        start_date = (end_date - timedelta(days=365)).isoformat()
+        payload = _fmp().historical_price_full(ticker, from_date=start_date, to_date=end_date.isoformat())
+        hist = _fmp_hist_to_df(payload)
         if hist.empty:
             return jsonify({'error': 'No data'}), 404
 
-        close = hist['Close']
+        close = hist['close']
 
         rsi = RSIIndicator(close).rsi()
         macd_calc = MACD(close)
         bb = BollingerBands(close)
 
         def series_to_points(series):
-            return [{'time': int(t.timestamp()), 'value': round(v, 2)} for t, v in zip(hist['Date'], series) if pd.notna(v)]
+            return [{'time': int(t.to_pydatetime().timestamp()) if hasattr(t, "to_pydatetime") else int(_parse_fmp_date(str(t)).timestamp()),
+                     'value': round(v, 2)} for t, v in zip(hist['date'], series) if pd.notna(v)]
 
         supports = []
         resistances = []

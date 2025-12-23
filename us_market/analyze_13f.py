@@ -6,14 +6,23 @@ Fetches and analyzes institutional holdings from SEC EDGAR
 """
 
 import os
-import pandas as pd
-import numpy as np
-import requests
+import sys
+import json
+import time
 import logging
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
-import json
-import time
+
+import numpy as np
+import pandas as pd
+import requests
+from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parents[1]
+if str(BASE_DIR) not in sys.path:
+    sys.path.append(str(BASE_DIR))
+
+from utils.fmp_client import get_fmp_client
 
 # Logging Configuration
 logging.basicConfig(
@@ -33,6 +42,7 @@ class SEC13FAnalyzer:
         self.data_dir = data_dir
         self.output_file = os.path.join(data_dir, 'us_13f_holdings.csv')
         self.cache_file = os.path.join(data_dir, 'us_13f_cache.json')
+        self.client = get_fmp_client()
         
         # SEC EDGAR API base URL
         self.sec_base_url = "https://data.sec.gov"
@@ -66,49 +76,68 @@ class SEC13FAnalyzer:
     def analyze_institutional_changes(self, tickers: List[str]) -> pd.DataFrame:
         """
         Analyze institutional ownership and recent changes
-        Uses yfinance as primary data source
+        Uses FMP as primary data source
         """
-        import yfinance as yf
         from tqdm import tqdm
         
         results = []
         
         for ticker in tqdm(tickers, desc="Fetching institutional data"):
             try:
-                stock = yf.Ticker(ticker)
-                info = stock.info
-                
+                profile = self.client.profile(ticker)
+                profile = profile[0] if profile else {}
+                ownership = self.client.institutional_ownership(ticker)
+                ownership = ownership[0] if ownership else {}
+
                 # Basic ownership info
-                inst_pct = info.get('heldPercentInstitutions', 0) or 0
-                insider_pct = info.get('heldPercentInsiders', 0) or 0
-                
+                inst_pct = ownership.get('institutionalOwnershipPercentage') or ownership.get('ownershipPercent') or 0
+                insider_pct = ownership.get('insiderOwnershipPercentage') or 0
+                try:
+                    inst_pct = float(inst_pct)
+                except Exception:
+                    inst_pct = 0.0
+                try:
+                    insider_pct = float(insider_pct)
+                except Exception:
+                    insider_pct = 0.0
+                if inst_pct > 1:
+                    inst_pct = inst_pct / 100
+                if insider_pct > 1:
+                    insider_pct = insider_pct / 100
+
                 # Float and shares
-                float_shares = info.get('floatShares', 0) or 0
-                shares_outstanding = info.get('sharesOutstanding', 0) or 0
-                short_pct = info.get('shortPercentOfFloat', 0) or 0
-                
+                float_shares = profile.get('floatShares', 0) or 0
+                shares_outstanding = profile.get('sharesOutstanding', 0) or 0
+                short_pct = profile.get('shortPercentOfFloat', 0) or 0
+                try:
+                    short_pct = float(short_pct)
+                except Exception:
+                    short_pct = 0.0
+                if short_pct > 1:
+                    short_pct = short_pct / 100
+
                 # Insider transactions
                 try:
-                    insider_txns = stock.insider_transactions
-                    if insider_txns is not None and len(insider_txns) > 0:
-                        recent = insider_txns.head(10)
-                        buys = len(recent[recent['Transaction'].str.contains('Buy', na=False)])
-                        sells = len(recent[recent['Transaction'].str.contains('Sale', na=False)])
-                        insider_sentiment = 'Buying' if buys > sells else ('Selling' if sells > buys else 'Neutral')
-                    else:
-                        insider_sentiment = 'Unknown'
-                        buys = 0
-                        sells = 0
-                except:
+                    insider_txns = self.client.insider_trading(ticker, page=0, limit=50)
+                    buys = 0
+                    sells = 0
+                    for txn in insider_txns or []:
+                        ttype = str(txn.get('transactionType') or txn.get('type') or '').lower()
+                        if 'buy' in ttype or 'purchase' in ttype:
+                            buys += 1
+                        elif 'sell' in ttype or 'sale' in ttype:
+                            sells += 1
+                    insider_sentiment = 'Buying' if buys > sells else ('Selling' if sells > buys else 'Neutral')
+                except Exception:
                     insider_sentiment = 'Unknown'
                     buys = 0
                     sells = 0
-                
+
                 # Institutional holders count
                 try:
-                    inst_holders = stock.institutional_holders
+                    inst_holders = self.client.institutional_holders(ticker)
                     num_inst_holders = len(inst_holders) if inst_holders is not None else 0
-                except:
+                except Exception:
                     num_inst_holders = 0
                 
                 # Score calculation (0-100)

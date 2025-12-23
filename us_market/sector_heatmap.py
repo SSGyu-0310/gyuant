@@ -6,12 +6,20 @@ Collects sector ETF performance data for heatmap visualization
 """
 
 import os
+import sys
 import json
-import pandas as pd
-import yfinance as yf
-from datetime import datetime
-from typing import Dict, List
 import logging
+from datetime import datetime, timedelta
+from typing import Dict, List
+
+import pandas as pd
+from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parents[1]
+if str(BASE_DIR) not in sys.path:
+    sys.path.append(str(BASE_DIR))
+
+from utils.fmp_client import get_fmp_client
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -21,6 +29,7 @@ class SectorHeatmapCollector:
     """Collect sector ETF performance data for heatmap visualization"""
     
     def __init__(self):
+        self.client = get_fmp_client()
         # Sector ETFs with full names and colors
         self.sector_etfs = {
             'XLK': {'name': 'Technology', 'color': '#4A90A4'},
@@ -58,30 +67,25 @@ class SectorHeatmapCollector:
         tickers = list(self.sector_etfs.keys())
         
         try:
-            data = yf.download(tickers, period='5d', progress=False)
-            
-            if data.empty:
-                return {'error': 'No data available'}
-            
             sectors = []
             for ticker, info in self.sector_etfs.items():
                 try:
-                    if ticker not in data['Close'].columns:
+                    end_date = datetime.utcnow().date()
+                    start_date = (end_date - timedelta(days=14)).isoformat()
+                    payload = self.client.historical_price_full(ticker, from_date=start_date, to_date=end_date.isoformat())
+                    hist = pd.DataFrame(payload.get("historical") or [])
+                    if hist.empty:
                         continue
-                    
-                    prices = data['Close'][ticker].dropna()
-                    if len(prices) < 2:
+                    hist["date"] = pd.to_datetime(hist["date"], errors="coerce")
+                    hist = hist.dropna(subset=["date"]).sort_values("date")
+                    if len(hist) < 2:
                         continue
-                    
-                    current = prices.iloc[-1]
-                    prev_day = prices.iloc[-2]
-                    week_ago = prices.iloc[0] if len(prices) >= 5 else prices.iloc[0]
-                    
-                    daily_change = ((current / prev_day) - 1) * 100
-                    weekly_change = ((current / week_ago) - 1) * 100
-                    
-                    # Volume
-                    volume = data['Volume'][ticker].iloc[-1] if 'Volume' in data.columns else 0
+                    current = hist["close"].iloc[-1]
+                    prev_day = hist["close"].iloc[-2]
+                    week_ago = hist["close"].iloc[0] if len(hist) >= 5 else hist["close"].iloc[0]
+                    daily_change = ((current / prev_day) - 1) * 100 if prev_day else 0
+                    weekly_change = ((current / week_ago) - 1) * 100 if week_ago else 0
+                    volume = int(hist["volume"].iloc[-1]) if "volume" in hist.columns else 0
                     
                     sectors.append({
                         'ticker': ticker,
@@ -128,29 +132,27 @@ class SectorHeatmapCollector:
                 ticker_to_sector[stock] = sector
                 
         try:
-            data = yf.download(all_tickers, period=period, progress=False)
-            
-            if data.empty:
-                return {'error': 'No data'}
-            
             market_map = {name: [] for name in self.sector_stocks.keys()}
-            
+
+            end_date = datetime.utcnow().date()
+            start_date = (end_date - timedelta(days=10)).isoformat()
+
             for ticker in all_tickers:
                 try:
-                    if ticker not in data['Close'].columns:
+                    payload = self.client.historical_price_full(ticker, from_date=start_date, to_date=end_date.isoformat())
+                    hist = pd.DataFrame(payload.get("historical") or [])
+                    if hist.empty:
                         continue
-                    prices = data['Close'][ticker].dropna()
-                    if len(prices) < 2:
+                    hist["date"] = pd.to_datetime(hist["date"], errors="coerce")
+                    hist = hist.dropna(subset=["date"]).sort_values("date")
+                    if len(hist) < 2:
                         continue
-                    
-                    current = prices.iloc[-1]
-                    prev = prices.iloc[-2]
-                    change = ((current / prev) - 1) * 100
-                    
-                    # Weight by Volume * Price (Activity proxy)
-                    vol = data['Volume'][ticker].iloc[-1] if 'Volume' in data.columns else 100000
+                    current = hist["close"].iloc[-1]
+                    prev = hist["close"].iloc[-2]
+                    change = ((current / prev) - 1) * 100 if prev else 0
+                    vol = hist["volume"].iloc[-1] if "volume" in hist.columns else 100000
                     weight = current * vol
-                    
+
                     sector = ticker_to_sector.get(ticker, 'Unknown')
                     if sector in market_map:
                         market_map[sector].append({

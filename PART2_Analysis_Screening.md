@@ -2,6 +2,7 @@
 
 > 이 문서는 US Market 시스템의 **분석/스크리닝** 관련 전체 소스 코드를 포함합니다.
 > Part 1의 데이터 수집이 완료된 후, 이 파일들을 생성하고 실행하세요.
+> **NOTE**: 현재 구현은 FMP 기반입니다. 아래의 yfinance 예시는 과거 버전이므로 실제 코드는 `us_market/` 폴더를 참고하세요.
 
 ---
 
@@ -20,8 +21,10 @@
 ## 📦 필수 패키지
 
 ```bash
-pip install pandas numpy yfinance tqdm requests seaborn matplotlib
+pip install pandas numpy tqdm requests seaborn matplotlib
 ```
+
+> `FMP_API_KEY` 환경 변수는 필수입니다. (예: `.env` 또는 OS 환경 변수)
 
 ---
 

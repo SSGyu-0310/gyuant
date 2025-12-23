@@ -6,14 +6,21 @@ Fetches economic events and provides AI-powered impact assessment
 """
 
 import os
+import sys
 import json
 import requests
 import logging
-import pandas as pd
 from datetime import datetime, timedelta
-from io import StringIO
 from typing import Dict, List
+
+from pathlib import Path
 from dotenv import load_dotenv
+
+BASE_DIR = Path(__file__).resolve().parents[1]
+if str(BASE_DIR) not in sys.path:
+    sys.path.append(str(BASE_DIR))
+
+from utils.fmp_client import get_fmp_client
 
 load_dotenv()
 load_dotenv(os.path.join(os.path.dirname(os.path.dirname(__file__)), '.env'))
@@ -29,6 +36,7 @@ class EconomicCalendar:
         self.data_dir = data_dir
         self.output_file = os.path.join(data_dir, 'weekly_calendar.json')
         self.api_key = os.getenv('GOOGLE_API_KEY') or os.getenv('GEMINI_API_KEY')
+        self.client = get_fmp_client()
         
         # Important recurring events
         self.major_events = [
@@ -45,45 +53,31 @@ class EconomicCalendar:
     def get_events(self) -> List[Dict]:
         """Get economic events"""
         events = []
-        
-        # Try to scrape Yahoo Finance calendar
+
+        # Fetch from FMP economic calendar
         try:
-            url = "https://finance.yahoo.com/calendar/economic"
-            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-            resp = requests.get(url, headers=headers, timeout=10)
-            
-            if resp.status_code == 200:
-                try:
-                    dfs = pd.read_html(StringIO(resp.text))
-                    if dfs:
-                        df = dfs[0]
-                        # Filter for US events if Country column exists
-                        if 'Country' in df.columns:
-                            df = df[df['Country'] == 'US']
-                        
-                        for _, row in df.head(20).iterrows():
-                            event_name = row.get('Event', row.get('Name', 'Unknown'))
-                            
-                            # Determine impact level
-                            impact = 'Medium'
-                            high_impact_keywords = ['FOMC', 'Fed', 'CPI', 'GDP', 'Payroll', 'NFP', 'Interest Rate']
-                            if any(kw.lower() in str(event_name).lower() for kw in high_impact_keywords):
-                                impact = 'High'
-                            
-                            events.append({
-                                'date': datetime.now().strftime('%Y-%m-%d'),
-                                'event': str(event_name),
-                                'impact': impact,
-                                'actual': str(row.get('Actual', '-')),
-                                'expected': str(row.get('Market Expectation', row.get('Expected', '-'))),
-                                'previous': str(row.get('Prior', row.get('Previous', '-'))),
-                                'description': ''
-                            })
-                except Exception as e:
-                    logger.debug(f"Error parsing Yahoo calendar: {e}")
-                    
+            start = datetime.utcnow().date()
+            end = start + timedelta(days=7)
+            raw_events = self.client.economic_calendar(
+                from_date=start.isoformat(),
+                to_date=end.isoformat(),
+            )
+            for row in raw_events or []:
+                event_name = row.get("event") or row.get("name") or "Unknown"
+                impact = row.get("impact") or "Medium"
+                date_str = row.get("date") or row.get("eventDate") or ""
+                date_val = date_str.split(" ")[0] if date_str else start.isoformat()
+                events.append({
+                    'date': date_val,
+                    'event': str(event_name),
+                    'impact': impact,
+                    'actual': str(row.get('actual', row.get('actualValue', '-'))),
+                    'expected': str(row.get('expected', row.get('estimate', '-'))),
+                    'previous': str(row.get('previous', row.get('prior', '-'))),
+                    'description': ''
+                })
         except Exception as e:
-            logger.warning(f"Could not fetch Yahoo calendar: {e}")
+            logger.warning(f"Could not fetch FMP calendar: {e}")
         
         # Add manual important events for this week
         today = datetime.now()

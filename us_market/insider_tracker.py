@@ -6,12 +6,20 @@ Tracks insider buying/selling activity from SEC filings
 """
 
 import os
+import sys
 import json
 import logging
-import pandas as pd
-import yfinance as yf
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
+
+import pandas as pd
+from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parents[1]
+if str(BASE_DIR) not in sys.path:
+    sys.path.append(str(BASE_DIR))
+
+from utils.fmp_client import get_fmp_client
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -23,62 +31,48 @@ class InsiderTracker:
     def __init__(self, data_dir: str = '.'):
         self.data_dir = data_dir
         self.output_file = os.path.join(data_dir, 'insider_moves.json')
+        self.client = get_fmp_client()
         
     def get_insider_activity(self, ticker: str) -> List[Dict]:
         """Get insider transactions for a ticker"""
         try:
-            stock = yf.Ticker(ticker)
-            df = stock.insider_transactions
-            
-            if df is None or df.empty:
+            txns = self.client.insider_trading(ticker, page=0, limit=100)
+            if not txns:
                 return []
-            
-            # Filter for recent transactions (last 6 months)
+
             cutoff = pd.Timestamp.now() - pd.Timedelta(days=180)
-            
-            # Process transactions
             recent_transactions = []
-            
-            for idx, row in df.iterrows():
+
+            for txn in txns:
                 try:
-                    # Check date
-                    if hasattr(idx, 'date'):
-                        trans_date = idx
-                    else:
-                        trans_date = pd.Timestamp(idx)
-                    
-                    if trans_date < cutoff:
+                    date_str = txn.get("transactionDate") or txn.get("filingDate") or txn.get("date") or ""
+                    trans_date = pd.to_datetime(date_str, errors="coerce")
+                    if pd.isna(trans_date) or trans_date < cutoff:
                         continue
-                    
-                    # Get transaction type
-                    text = str(row.get('Text', '')).lower()
-                    transaction = str(row.get('Transaction', '')).lower()
-                    
-                    if 'purchase' in text or 'buy' in text or 'purchase' in transaction:
-                        trans_type = 'Buy'
-                    elif 'sale' in text or 'sell' in text or 'sale' in transaction:
-                        trans_type = 'Sell'
+
+                    ttype_raw = str(txn.get("transactionType") or txn.get("type") or "").lower()
+                    if "buy" in ttype_raw or "purchase" in ttype_raw:
+                        trans_type = "Buy"
+                    elif "sell" in ttype_raw or "sale" in ttype_raw:
+                        trans_type = "Sell"
                     else:
-                        trans_type = 'Other'
-                    
-                    # Get values
-                    value = float(row.get('Value', 0) or 0)
-                    shares = int(row.get('Shares', 0) or 0)
-                    insider = row.get('Insider', 'N/A')
-                    
-                    # Only include buys and significant sells
-                    if trans_type == 'Other':
+                        trans_type = "Other"
+
+                    if trans_type == "Other":
                         continue
-                    
+
+                    value = float(txn.get("transactionValue") or txn.get("value") or 0)
+                    shares = int(float(txn.get("transactionShares") or txn.get("shares") or 0))
+                    insider = txn.get("reportingName") or txn.get("insider") or "N/A"
+
                     recent_transactions.append({
-                        'date': str(trans_date.date()) if hasattr(trans_date, 'date') else str(trans_date)[:10],
+                        'date': trans_date.strftime('%Y-%m-%d'),
                         'insider': insider,
                         'type': trans_type,
                         'value': value,
                         'shares': shares
                     })
-                    
-                except Exception as e:
+                except Exception:
                     continue
             
             return recent_transactions[:10]  # Return top 10 most recent

@@ -7,13 +7,22 @@ Macro Market Analyzer
 """
 
 import os
+import sys
 import json
 import requests
-import yfinance as yf
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional
+
+import pandas as pd
+from pathlib import Path
 from dotenv import load_dotenv
+
+BASE_DIR = Path(__file__).resolve().parents[1]
+if str(BASE_DIR) not in sys.path:
+    sys.path.append(str(BASE_DIR))
+
+from utils.fmp_client import get_fmp_client
 
 # Load .env
 load_dotenv()
@@ -30,14 +39,28 @@ class MacroDataCollector:
         self.macro_tickers = {
             'VIX': '^VIX',
             'DXY': 'DX-Y.NYB',
-            '2Y_Yield': '^IRX',
-            '10Y_Yield': '^TNX',
             'GOLD': 'GC=F',
             'OIL': 'CL=F',
             'BTC': 'BTC-USD',
             'SPY': 'SPY',
             'QQQ': 'QQQ'
         }
+        self.client = get_fmp_client()
+
+    def _fetch_52w_range(self, symbol: str) -> Dict[str, float]:
+        end_date = datetime.utcnow()
+        start_date = end_date - timedelta(days=370)
+        payload = self.client.historical_price_full(
+            symbol,
+            from_date=start_date.strftime("%Y-%m-%d"),
+            to_date=end_date.strftime("%Y-%m-%d"),
+        )
+        hist = pd.DataFrame(payload.get("historical") or [])
+        if hist.empty:
+            return {"high": 0.0, "low": 0.0, "pct_from_high": 0.0}
+        high = float(hist["high"].max()) if "high" in hist.columns else 0.0
+        low = float(hist["low"].min()) if "low" in hist.columns else 0.0
+        return {"high": high, "low": low}
     
     def get_current_macro_data(self) -> Dict:
         """Fetch current macro indicators"""
@@ -46,29 +69,26 @@ class MacroDataCollector:
         
         try:
             tickers = list(self.macro_tickers.values())
-            data = yf.download(tickers, period='5d', progress=False)
-            
+            quotes = self.client.quote(tickers)
+            quote_map = {q.get("symbol"): q for q in quotes if isinstance(q, dict)}
+
             for name, ticker in self.macro_tickers.items():
                 try:
-                    if ticker not in data['Close'].columns:
+                    mapped = map_symbol(ticker)
+                    quote = quote_map.get(mapped)
+                    if not quote:
                         continue
-                    hist = data['Close'][ticker].dropna()
-                    if len(hist) < 2:
+                    val = quote.get("price")
+                    prev = quote.get("previousClose") or val
+                    if val is None:
                         continue
-                    
-                    val = hist.iloc[-1]
-                    prev = hist.iloc[-2]
-                    change = ((val / prev) - 1) * 100
-                    
-                    # 52-week High/Low (simplified)
-                    try:
-                        full_hist = yf.Ticker(ticker).history(period='1y')
-                        high = full_hist['High'].max() if not full_hist.empty else val
-                        low = full_hist['Low'].min() if not full_hist.empty else val
-                        pct_high = ((val / high) - 1) * 100 if high > 0 else 0
-                    except:
-                        high, low, pct_high = val, val, 0
-                    
+                    change = ((float(val) / float(prev)) - 1) * 100 if prev else 0
+
+                    range_52w = self._fetch_52w_range(ticker)
+                    high = range_52w.get("high", val) or val
+                    low = range_52w.get("low", val) or val
+                    pct_high = ((float(val) / float(high)) - 1) * 100 if high else 0
+
                     macro_data[name] = {
                         'value': round(float(val), 2),
                         'change_1d': round(float(change), 2),
@@ -79,6 +99,29 @@ class MacroDataCollector:
                 except Exception as e:
                     logger.debug(f"Error processing {name}: {e}")
                     continue
+
+            # Treasury yields
+            try:
+                rates = self.client.treasury_rates()
+                if rates:
+                    latest = rates[0]
+                    prev = rates[1] if len(rates) > 1 else latest
+                    for label, key in (("2Y_Yield", "2Y"), ("10Y_Yield", "10Y")):
+                        if latest.get(key) is None:
+                            continue
+                        cur = float(latest.get(key))
+                        prev_val = prev.get(key) if prev else None
+                        prev_val = float(prev_val) if prev_val is not None else cur
+                        change = ((cur / prev_val) - 1) * 100 if prev_val else 0
+                        macro_data[label] = {
+                            "value": round(cur, 2),
+                            "change_1d": round(change, 2),
+                            "pct_from_high": 0,
+                            "52w_high": cur,
+                            "52w_low": cur,
+                        }
+            except Exception:
+                pass
             
             # Yield Spread (10Y - 2Y)
             if '2Y_Yield' in macro_data and '10Y_Yield' in macro_data:

@@ -24,7 +24,7 @@
         try {
             let url = '/api/portfolio';
             if (selectedDate) url += `?date=${selectedDate}`;
-            const res = await fetchWithRetry(url, {}, { retries: 1, backoffMs: 300, timeoutMs: 6000 });
+            const res = await fetchWithRetry(url, {}, { retries: 1, backoffMs: 300, timeoutMs: 12000 });
             if (!res.ok) {
                 const container = document.getElementById('market-indices-container');
                 if (container) { container.innerHTML = ''; container.appendChild(renderStateBlock('error', t('error_generic'), { requestId: res.error?.requestId })); }

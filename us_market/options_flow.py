@@ -11,9 +11,6 @@ import logging
 from datetime import datetime
 from typing import Dict, List, Optional
 
-import pandas as pd
-import yfinance as yf
-
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -34,87 +31,8 @@ class OptionsFlowAnalyzer:
     def get_options_summary(self, ticker: str) -> Optional[Dict]:
         """Get options summary for a single ticker"""
         try:
-            stock = yf.Ticker(ticker)
-            expirations = stock.options
-            
-            if not expirations:
-                return None
-            
-            # Get nearest expiration
-            nearest_exp = expirations[0]
-            opt = stock.option_chain(nearest_exp)
-            
-            calls = opt.calls
-            puts = opt.puts
-            
-            # Volume metrics
-            call_volume = calls['volume'].sum() if 'volume' in calls.columns else 0
-            put_volume = puts['volume'].sum() if 'volume' in puts.columns else 0
-            
-            # Open Interest
-            call_oi = calls['openInterest'].sum() if 'openInterest' in calls.columns else 0
-            put_oi = puts['openInterest'].sum() if 'openInterest' in puts.columns else 0
-            
-            # Put/Call Ratio
-            pc_ratio = put_volume / call_volume if call_volume > 0 else 0
-            
-            # Implied Volatility (average of ATM options)
-            avg_call_iv = calls['impliedVolatility'].mean() if 'impliedVolatility' in calls.columns else 0
-            avg_put_iv = puts['impliedVolatility'].mean() if 'impliedVolatility' in puts.columns else 0
-            avg_iv = (avg_call_iv + avg_put_iv) / 2 * 100
-            
-            # Unusual Activity Detection
-            avg_call_vol = calls['volume'].mean() if not calls.empty else 0
-            avg_put_vol = puts['volume'].mean() if not puts.empty else 0
-            
-            unusual_calls = calls[calls['volume'] > avg_call_vol * 3] if avg_call_vol > 0 else pd.DataFrame()
-            unusual_puts = puts[puts['volume'] > avg_put_vol * 3] if avg_put_vol > 0 else pd.DataFrame()
-            
-            # Sentiment interpretation
-            if pc_ratio < 0.7:
-                sentiment = "Bullish"
-            elif pc_ratio > 1.3:
-                sentiment = "Bearish"
-            else:
-                sentiment = "Neutral"
-            
-            # Score (0-100)
-            score = 50
-            if pc_ratio < 0.5:
-                score += 25
-            elif pc_ratio < 0.7:
-                score += 15
-            elif pc_ratio > 1.5:
-                score -= 20
-            elif pc_ratio > 1.2:
-                score -= 10
-            
-            # High unusual call activity is bullish
-            if len(unusual_calls) > 3:
-                score += 10
-            if len(unusual_puts) > 3:
-                score -= 10
-            
-            score = max(0, min(100, score))
-            
-            return {
-                'ticker': ticker,
-                'expiration': nearest_exp,
-                'metrics': {
-                    'pc_ratio': round(pc_ratio, 2),
-                    'call_volume': int(call_volume),
-                    'put_volume': int(put_volume),
-                    'call_oi': int(call_oi),
-                    'put_oi': int(put_oi),
-                    'implied_volatility': round(avg_iv, 1)
-                },
-                'unusual_activity': {
-                    'unusual_calls': len(unusual_calls),
-                    'unusual_puts': len(unusual_puts)
-                },
-                'sentiment': sentiment,
-                'score': score
-            }
+            logger.info("Options chain data not available via FMP; skipping.")
+            return None
             
         except Exception as e:
             logger.debug(f"Error analyzing {ticker}: {e}")
@@ -148,7 +66,8 @@ class OptionsFlowAnalyzer:
                 'bearish_count': len(bearish),
                 'neutral_count': len(results) - len(bullish) - len(bearish)
             },
-            'options_flow': results
+            'options_flow': results,
+            'note': 'Options chain data not available via FMP. Configure a dedicated options provider to enable this feature.'
         }
         
         # Save to file
@@ -173,7 +92,6 @@ class OptionsFlowAnalyzer:
 
 def main():
     import argparse
-    import pandas as pd  # Import here for unusual activity detection
     
     parser = argparse.ArgumentParser(description='Options Flow Analyzer')
     parser.add_argument('--dir', default='.', help='Data directory')
@@ -191,5 +109,4 @@ def main():
 
 
 if __name__ == "__main__":
-    import pandas as pd  # Required for DataFrame operations
     main()

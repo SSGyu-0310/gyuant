@@ -2,6 +2,7 @@
 
 > 이 문서는 US Market 시스템의 **데이터 수집** 관련 스크립트를 모아 놓은 것입니다.
 > 빈 폴더에 이 코드들을 넣고 순서대로 실행하면 기본 데이터가 수집됩니다.
+> **NOTE**: 현재 구현은 FMP 기반입니다. 아래의 yfinance 예시는 과거 버전이므로 실제 코드는 `us_market/` 폴더를 참고하세요.
 
 ---
 
@@ -19,14 +20,16 @@
 ## 📦 필수 패키지
 
 ```bash
-pip install pandas numpy yfinance tqdm requests python-dotenv
+pip install pandas numpy tqdm requests python-dotenv
 ```
+
+> `FMP_API_KEY` 환경 변수는 필수입니다. (예: `.env` 또는 OS 환경 변수)
 
 ---
 
 ## 1️⃣ create_us_daily_prices.py
 
-> S&P 500 종목의 일일 가격 데이터를 yfinance로 수집합니다.
+> S&P 500 종목의 일일 가격 데이터를 FMP로 수집합니다.
 
 ```python
 #!/usr/bin/env python3

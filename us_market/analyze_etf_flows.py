@@ -7,14 +7,22 @@ Optionally generates AI-powered insights using Gemini
 """
 
 import os
-import pandas as pd
-import numpy as np
-import yfinance as yf
-import logging
+import sys
 import json
+import logging
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
+
+import numpy as np
+import pandas as pd
+from pathlib import Path
 from tqdm import tqdm
+
+BASE_DIR = Path(__file__).resolve().parents[1]
+if str(BASE_DIR) not in sys.path:
+    sys.path.append(str(BASE_DIR))
+
+from utils.fmp_client import get_fmp_client
 
 # Logging Configuration
 logging.basicConfig(
@@ -31,6 +39,7 @@ class ETFFlowAnalyzer:
         self.data_dir = data_dir
         self.output_csv = os.path.join(data_dir, 'us_etf_flows.csv')
         self.output_json = os.path.join(data_dir, 'etf_flow_analysis.json')
+        self.client = get_fmp_client()
         
         # Major ETFs to track (24 ETFs covering different sectors/asset classes)
         self.etf_list = {
@@ -79,16 +88,20 @@ class ETFFlowAnalyzer:
         try:
             end_date = datetime.now()
             start_date = end_date - timedelta(days=self.lookback_days)
-            
-            etf = yf.Ticker(ticker)
-            hist = etf.history(start=start_date, end=end_date)
-            
+
+            payload = self.client.historical_price_full(
+                ticker,
+                from_date=start_date.strftime("%Y-%m-%d"),
+                to_date=end_date.strftime("%Y-%m-%d"),
+            )
+            hist = pd.DataFrame(payload.get("historical") or [])
             if hist.empty:
                 return pd.DataFrame()
-            
-            hist = hist.reset_index()
+
+            hist["date"] = pd.to_datetime(hist["date"], errors="coerce")
+            hist = hist.dropna(subset=["date"]).sort_values("date")
             hist['ticker'] = ticker
-            
+            hist = hist.rename(columns={"date": "Date", "close": "Close", "open": "Open", "high": "High", "low": "Low", "volume": "Volume"})
             return hist
             
         except Exception as e:

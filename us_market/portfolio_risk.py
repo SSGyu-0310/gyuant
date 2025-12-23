@@ -6,13 +6,21 @@ Analyzes correlation and volatility risk for a portfolio
 """
 
 import os
+import sys
 import json
 import logging
-import pandas as pd
-import numpy as np
-import yfinance as yf
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional
+
+import numpy as np
+import pandas as pd
+from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parents[1]
+if str(BASE_DIR) not in sys.path:
+    sys.path.append(str(BASE_DIR))
+
+from utils.fmp_client import get_fmp_client
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -24,6 +32,24 @@ class PortfolioRiskAnalyzer:
     def __init__(self, data_dir: str = '.'):
         self.data_dir = data_dir
         self.output_file = os.path.join(data_dir, 'portfolio_risk.json')
+        self.client = get_fmp_client()
+
+    def _fetch_close_series(self, ticker: str, days: int = 180) -> pd.Series:
+        end_date = datetime.utcnow()
+        start_date = end_date - timedelta(days=days)
+        payload = self.client.historical_price_full(
+            ticker,
+            from_date=start_date.strftime("%Y-%m-%d"),
+            to_date=end_date.strftime("%Y-%m-%d"),
+        )
+        hist = pd.DataFrame(payload.get("historical") or [])
+        if hist.empty:
+            return pd.Series(dtype=float)
+        hist["date"] = pd.to_datetime(hist["date"], errors="coerce")
+        hist = hist.dropna(subset=["date"]).sort_values("date")
+        if "close" not in hist.columns:
+            return pd.Series(dtype=float)
+        return hist.set_index("date")["close"]
     
     def analyze_portfolio(self, tickers: List[str], weights: List[float] = None) -> Dict:
         """
@@ -40,14 +66,16 @@ class PortfolioRiskAnalyzer:
         
         try:
             # Download price data
-            data = yf.download(tickers, period='6mo', progress=False)['Close']
-            
-            if data.empty:
+            series_list = []
+            for ticker in tickers:
+                series = self._fetch_close_series(ticker, days=180)
+                if not series.empty:
+                    series_list.append(series.rename(ticker))
+
+            if not series_list:
                 return {'error': 'No price data available'}
-            
-            # Handle single ticker case in column structure
-            if len(tickers) == 1:
-                data = pd.DataFrame({tickers[0]: data})
+
+            data = pd.concat(series_list, axis=1)
             
             # Drop any tickers with missing data
             data = data.dropna(axis=1, how='all')
@@ -112,21 +140,21 @@ class PortfolioRiskAnalyzer:
             
             # === Beta (vs SPY) ===
             try:
-                spy_data = yf.download('SPY', period='6mo', progress=False)['Close']
-                spy_returns = spy_data.pct_change().dropna()
-                
+                spy_series = self._fetch_close_series("SPY", days=180)
+                spy_returns = spy_series.pct_change().dropna()
+
                 # Align dates
                 common_dates = portfolio_returns.index.intersection(spy_returns.index)
                 if len(common_dates) > 20:
                     port_aligned = portfolio_returns.loc[common_dates]
                     spy_aligned = spy_returns.loc[common_dates]
-                    
+
                     covariance = np.cov(port_aligned, spy_aligned)[0, 1]
                     spy_variance = spy_aligned.var()
                     beta = covariance / spy_variance if spy_variance > 0 else 1
                 else:
                     beta = 1
-            except:
+            except Exception:
                 beta = 1
             
             # === Risk Rating ===

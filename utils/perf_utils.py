@@ -11,8 +11,8 @@ def get_perf_stats() -> Dict[str, Any]:
         stats = {
             "cache_hits": 0,
             "cache_misses": 0,
-            "yf_calls": 0,
-            "yf_batches": 0,
+            "fmp_calls": 0,
+            "fmp_batches": 0,
             "parallel_tasks": 0,
         }
         g._perf_stats = stats
