@@ -1006,19 +1006,46 @@ def _compute_top_movers(window: str, limit: int) -> Tuple[List[Dict[str, Any]], 
     try:
         df = pd.read_csv(path, usecols=["ticker", "date", "close"])
         rows_read = len(df)
+        logger.debug(f"_compute_top_movers: Read {rows_read} rows from {path}")
         if df.empty:
+            errors.append("EMPTY_CSV")
             return [], [], rows_read, updated_at, errors
+        
+        # Track rows dropped at each step for debugging
+        initial_count = len(df)
         df = df.dropna(subset=["ticker", "date", "close"])
+        after_basic_dropna = len(df)
+        if after_basic_dropna < initial_count:
+            logger.debug(f"_compute_top_movers: Dropped {initial_count - after_basic_dropna} rows with missing ticker/date/close")
         if df.empty:
+            errors.append("ALL_NULL_BASIC")
             return [], [], rows_read, updated_at, errors
+        
         df["date"] = pd.to_datetime(df["date"], errors="coerce")
+        before_date_dropna = len(df)
         df = df.dropna(subset=["date"])
+        after_date_dropna = len(df)
+        if after_date_dropna < before_date_dropna:
+            logger.warning(f"_compute_top_movers: Dropped {before_date_dropna - after_date_dropna} rows due to date parsing failure")
         if df.empty:
+            errors.append("ALL_NULL_DATE")
             return [], [], rows_read, updated_at, errors
+        
         df["close"] = pd.to_numeric(df["close"], errors="coerce")
+        before_close_dropna = len(df)
         df = df.dropna(subset=["close"])
+        after_close_dropna = len(df)
+        if after_close_dropna < before_close_dropna:
+            logger.debug(f"_compute_top_movers: Dropped {before_close_dropna - after_close_dropna} rows with invalid close price")
         if df.empty:
+            errors.append("ALL_NULL_CLOSE")
             return [], [], rows_read, updated_at, errors
+        
+        # Log data range for debugging
+        min_date = df["date"].min()
+        max_date = df["date"].max()
+        unique_tickers = df["ticker"].nunique()
+        logger.debug(f"_compute_top_movers: Data range {min_date.date()} to {max_date.date()}, {unique_tickers} unique tickers, {len(df)} valid rows")
 
         gainers: List[Dict[str, Any]] = []
         losers: List[Dict[str, Any]] = []
@@ -1091,9 +1118,17 @@ def _load_sector_map() -> Dict[str, str]:
                 if t and s:
                     mapping[t] = s
             if mapping:
+                logger.debug(f"Loaded sector map from {path} ({len(mapping)} tickers)")
                 return mapping
-        except Exception:
+        except Exception as e:
+            logger.warning(f"Error loading sector map from {path}: {e}")
             continue
+    
+    # Fallback to SECTOR_MAP if no CSV found
+    if SECTOR_MAP:
+        logger.debug(f"Using SECTOR_MAP fallback ({len(SECTOR_MAP)} tickers)")
+        return SECTOR_MAP.copy()
+    
     return {}
 
 
