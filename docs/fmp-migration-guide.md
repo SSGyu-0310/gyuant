@@ -8,14 +8,12 @@ Replace Yahoo/yfinance-based market data fetches with the Financial Modeling Pre
 | --- | --- | --- |
 | `flask_app.py:get_sector` | sector lookup | `yf.Ticker().info` |
 | `flask_app.py:fetch_price_map` | latest close for many tickers | `yf.download()` |
-| `flask_app.py:get_kr_market_status` | 1y OHLC for ^KS11/^KQ11 | `yf.Ticker().history()` |
 | `flask_app.py:get_portfolio_data` | indices + FX 5d prices | `yf.Ticker().history()` |
 | `flask_app.py:get_us_portfolio_data` | US indices/commodities/crypto | `yf.Ticker().history()` |
 | `flask_app.py:get_us_stock_chart` | OHLC candles | `yf.Ticker().history()` |
 | `flask_app.py:get_us_macro_analysis` | live macro tickers | `yf.download()` |
 | `flask_app.py:get_realtime_prices` | intraday 1m bars | `yf.download(interval='1m')` |
 | `flask_app.py:get_technical_indicators` | 1y OHLC | `yf.Ticker().history()` |
-| `flask_app.py:get_stock_detail` | KR ticker OHLC | `yf.Ticker().history()` |
 | `us_market/create_us_daily_prices.py` | daily OHLCV per ticker | `yf.Ticker().history()` |
 | `us_market/smart_money_screener_v2.py` | technicals, fundamentals, analyst data | `yf.Ticker().history()` / `yf.Ticker().info` |
 | `us_market/sector_heatmap.py` | 5d OHLCV for ETFs/stocks | `yf.download()` |
@@ -24,7 +22,6 @@ Replace Yahoo/yfinance-based market data fetches with the Financial Modeling Pre
 | `us_market/portfolio_risk.py` | 6mo close history | `yf.download()` |
 | `us_market/options_flow.py` | options chain & IV | `yf.Ticker().options` / `.option_chain()` |
 | `us_market/insider_tracker.py` | insider transactions | `yf.Ticker().insider_transactions` |
-| `us_market/analyze_13f.py` | ownership, insider activity | `yf.Ticker().info` / `.insider_transactions` / `.institutional_holders` |
 | `us_market/economic_calendar.py` | economic calendar | `finance.yahoo.com/calendar/economic` |
 | `tests/conftest.py` | test mocks | `yfinance` monkeypatch |
 | `requirements*.txt` | dependency | `yfinance` |
@@ -64,10 +61,6 @@ Common endpoints referenced in FMP docs (examples):
 - Insider trading:
   - https://financialmodelingprep.com/api/v4/insider-trading?symbol=AAPL&page=0
   - https://financialmodelingprep.com/stable/insider-trading/search?page=0&limit=100
-- Institutional ownership:
-  - https://financialmodelingprep.com/api/v3/institutional-holder/AAPL
-  - https://financialmodelingprep.com/api/v4/institutional-ownership/symbol-ownership?symbol=AAPL&includeCurrentQuarter=false
-  - https://financialmodelingprep.com/stable/institutional-ownership/symbol-positions-summary?symbol=AAPL&year=2023&quarter=3
 - Economic calendar:
   - https://financialmodelingprep.com/stable/economic-calendar
   - https://financialmodelingprep.com/api/v3/economic_calendar
@@ -101,7 +94,6 @@ Common endpoints referenced in FMP docs (examples):
 - `get_us_stock_chart`, `get_stock_detail`, `get_technical_indicators`: replace `Ticker.history()` with `historical-price-full` (daily OHLC). Map `historical[].date/open/high/low/close`.
 - `get_realtime_prices`: replace `interval='1m'` with `historical-chart/1min` (stable) or use `quote` for current/open/high/low if 1m data is not required.
 - `get_us_portfolio_data`, `get_us_macro_analysis`: use `quote` for indices/commodities/crypto/forex. For yields, prefer `treasury-rates`.
-- `get_kr_market_status` / KR endpoints: check coverage via `index-list` and `forex-list`. If ^KS11/^KQ11 or KRW pairs are missing, keep Yahoo/yfinance fallback or add an alternate provider.
 - `utils/perf_utils.py`: rename `yf_calls` / `yf_batches` to `fmp_calls` / `fmp_batches` (or add parallel counters).
 
 ### `us_market/create_us_daily_prices.py`
@@ -132,10 +124,6 @@ Common endpoints referenced in FMP docs (examples):
 - Replace `insider_transactions` with `insider-trading` endpoints.
 - Map fields like date, reporting name, transaction type, value, and shares from FMP response.
 
-### `us_market/analyze_13f.py`
-- Replace `info` ownership fields with `institutional-ownership` endpoints (symbol ownership and holders).
-- Replace `insider_transactions` with `insider-trading` for insider sentiment.
-
 ### `us_market/options_flow.py`
 - FMP docs do not list options chain endpoints. Decide between:
   - Keep yfinance for options only, or
@@ -147,7 +135,6 @@ Common endpoints referenced in FMP docs (examples):
 ## Symbol Mapping Notes (Yahoo -> FMP)
 Confirm symbol formats using FMP list endpoints:
 - Indices: `index-list` (examples in docs: `^GSPC`).
-- Forex: `forex-list` (likely `USDKRW` rather than `KRW=X`).
 - Crypto: `BTCUSD` instead of `BTC-USD`.
 - Commodities: `GCUSD`, `CLUSD` instead of `GC=F`, `CL=F`.
 
@@ -155,4 +142,3 @@ Confirm symbol formats using FMP list endpoints:
 - Update `tests/conftest.py` to mock FMP client responses instead of yfinance.
 - Remove `yfinance` from `requirements*.txt` once no code paths depend on it.
 - Update project docs that mention yfinance (e.g., `PART1_Data_Collection.md`, `PART2_Analysis_Screening.md`, `strategy_overview.md`).
-

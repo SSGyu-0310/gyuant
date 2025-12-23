@@ -47,52 +47,51 @@ def _prepare_minimal_files(base: Path) -> None:
     _write_json(base / "weekly_calendar.json", {"week_start": "2024-01-01", "week_end": "2024-01-07", "events": []})
     _write_csv(base / "us_daily_prices.csv", ["ticker", "date", "close"], [{"ticker": "AAPL", "date": "2024-01-01", "close": 1}])
     _write_csv(base / "us_volume_analysis.csv", ["ticker", "name", "supply_demand_score", "supply_demand_stage"], [{"ticker": "AAPL", "name": "Apple", "supply_demand_score": 50, "supply_demand_stage": "Neutral"}])
-    _write_csv(base / "us_13f_holdings.csv", ["ticker", "institutional_pct", "institutional_score"], [{"ticker": "AAPL", "institutional_pct": 90, "institutional_score": 60}])
     _write_csv(base / "us_stocks_list.csv", ["ticker", "name", "sector", "market"], [{"ticker": "AAPL", "name": "Apple", "sector": "Tech", "market": "S&P500"}])
 
 
 @pytest.fixture
-def mock_yfinance(monkeypatch):
-    import yfinance as yf
+def mock_fmp_client():
+    class DummyFMPClient:
+        def quote(self, symbols):
+            out = []
+            for sym in symbols:
+                out.append({
+                    "symbol": sym,
+                    "price": 100.0,
+                    "previousClose": 98.0,
+                    "change": 2.0,
+                    "changesPercentage": 2.04,
+                    "volume": 1000000,
+                    "open": 99.0,
+                    "dayHigh": 101.0,
+                    "dayLow": 97.5,
+                    "timestamp": 1704067200,
+                })
+            return out
 
-    class DummyTicker:
-        def __init__(self, ticker):
-            self.ticker = ticker
-            self.info = {"sector": "Technology"}
-            idx = pd.date_range("2024-01-01", periods=2, tz="UTC")
-            self._hist = pd.DataFrame(
-                {"Open": [1, 2], "High": [1, 2], "Low": [1, 2], "Close": [1, 2], "Volume": [100, 100]},
-                index=idx,
-            )
+        def profile(self, symbol):
+            return {"sector": "Technology", "companyName": "Dummy", "price": 100.0, "mktCap": 1000000000}
 
-        @property
-        def options(self):
-            return ["2024-01-19"]
+        def historical_price_full(self, symbol, from_date=None, to_date=None):
+            return {
+                "historical": [
+                    {"date": "2024-01-01", "open": 95, "high": 100, "low": 94, "close": 98, "volume": 100},
+                    {"date": "2024-01-02", "open": 98, "high": 102, "low": 97, "close": 100, "volume": 110},
+                ]
+            }
 
-        def history(self, period="1y"):
-            return self._hist
+        def treasury_rates(self):
+            return [
+                {"date": "2024-01-02", "year2": 4.2, "year10": 4.5},
+                {"date": "2024-01-01", "year2": 4.1, "year10": 4.4},
+            ]
 
-        def option_chain(self, exp):
-            df = pd.DataFrame({"volume": [0], "openInterest": [0], "impliedVolatility": [0]})
-            return type("OC", (), {"calls": df, "puts": df})
-
-    def fake_download(tickers, *args, **kwargs):
-        idx = pd.date_range("2024-01-01", periods=5, tz="UTC")
-        if isinstance(tickers, list):
-            cols_close = pd.MultiIndex.from_product([["Close"], tickers])
-            cols_vol = pd.MultiIndex.from_product([["Volume"], tickers])
-            df_close = pd.DataFrame(1, index=idx, columns=cols_close)
-            df_vol = pd.DataFrame(1, index=idx, columns=cols_vol)
-            return pd.concat([df_close, df_vol], axis=1)
-        return pd.DataFrame({"Close": [1, 2], "Open": [1, 2], "High": [1, 2], "Low": [1, 2], "Volume": [1, 1]}, index=idx[:2])
-
-    monkeypatch.setattr(yf, "Ticker", DummyTicker)
-    monkeypatch.setattr(yf, "download", fake_download)
-    return yf
+    return DummyFMPClient()
 
 
 @pytest.fixture
-def make_client(tmp_path, monkeypatch, mock_yfinance):
+def make_client(tmp_path, monkeypatch, mock_fmp_client):
     def _make(with_data: bool = False):
         data_dir = tmp_path / ("data_with" if with_data else "data_empty")
         data_dir.mkdir()
@@ -106,6 +105,7 @@ def make_client(tmp_path, monkeypatch, mock_yfinance):
         else:
             import flask_app as app_module  # type: ignore
         importlib.reload(app_module)
+        monkeypatch.setattr(app_module, "get_fmp_client", lambda: mock_fmp_client)
         return app_module.app.test_client()
 
     return _make

@@ -9,7 +9,7 @@
 
 | 파일명 | 설명 | 출력 파일 |
 |--------|------|-----------|
-| `smart_money_screener_v2.py` | 6팩터 종합 스크리닝 | `smart_money_picks_v2.csv` |
+| `smart_money_screener_v2.py` | 5팩터 종합 스크리닝 | `smart_money_picks_v2.csv` |
 | `sector_heatmap.py` | 섹터별 퍼포먼스 히트맵 | `sector_heatmap.json` |
 | `options_flow.py` | 옵션 플로우 분석 | `options_flow.json` |
 | `insider_tracker.py` | 인사이더 매매 추적 | `insider_moves.json` |
@@ -20,14 +20,18 @@
 ## 📦 필수 패키지
 
 ```bash
-pip install pandas numpy yfinance tqdm requests seaborn matplotlib
+pip install pandas numpy requests tqdm seaborn matplotlib yfinance
 ```
+
+> 분석/스크리닝 데이터 소스는 FMP를 기본으로 사용하며, 옵션 체인은 yfinance를 유지합니다.
+> 아래 코드 블록은 레거시 예시일 수 있으니 최신 구현은 각 스크립트 파일을 참고하세요.
 
 ---
 
 ## 1️⃣ smart_money_screener_v2.py
 
-> **6팩터 종합 분석**으로 투자 유망 종목을 선별합니다.
+> **5팩터 종합 분석**으로 투자 유망 종목을 선별합니다.
+> 최신 구현: `us_market/smart_money_screener_v2.py`
 
 ```python
 #!/usr/bin/env python3
@@ -77,7 +81,6 @@ class EnhancedSmartMoneyScreener:
         
         # Load analysis data
         self.volume_df = None
-        self.holdings_df = None
         self.etf_df = None
         self.prices_df = None
         
@@ -97,15 +100,6 @@ class EnhancedSmartMoneyScreener:
                 logger.info(f"✅ Loaded volume analysis: {len(self.volume_df)} stocks")
             else:
                 logger.warning("⚠️ Volume analysis not found")
-                return False
-            
-            # 13F Holdings
-            holdings_file = os.path.join(self.data_dir, 'us_13f_holdings.csv')
-            if os.path.exists(holdings_file):
-                self.holdings_df = pd.read_csv(holdings_file)
-                logger.info(f"✅ Loaded 13F holdings: {len(self.holdings_df)} stocks")
-            else:
-                logger.warning("⚠️ 13F holdings not found")
                 return False
             
             # ETF Flows
@@ -436,12 +430,11 @@ class EnhancedSmartMoneyScreener:
         """Calculate final composite score"""
         # Weighted composite
         composite = (
-            row.get('supply_demand_score', 50) * 0.25 +
-            row.get('institutional_score', 50) * 0.20 +
-            tech.get('technical_score', 50) * 0.20 +
-            fund.get('fundamental_score', 50) * 0.15 +
-            analyst.get('analyst_score', 50) * 0.10 +
-            rs.get('rs_score', 50) * 0.10
+            row.get('supply_demand_score', 50) * 0.3125 +
+            tech.get('technical_score', 50) * 0.25 +
+            fund.get('fundamental_score', 50) * 0.1875 +
+            analyst.get('analyst_score', 50) * 0.125 +
+            rs.get('rs_score', 50) * 0.125
         )
         
         # Determine grade
@@ -458,17 +451,8 @@ class EnhancedSmartMoneyScreener:
         """Run enhanced screening"""
         logger.info("🔍 Running Enhanced Smart Money Screening...")
         
-        # Merge volume and holdings data
-        merged_df = pd.merge(
-            self.volume_df,
-            self.holdings_df,
-            on='ticker',
-            how='inner',
-            suffixes=('_vol', '_inst')
-        )
-        
         # Pre-filter: Focus on accumulation candidates
-        filtered = merged_df[merged_df['supply_demand_score'] >= 50]
+        filtered = self.volume_df[self.volume_df['supply_demand_score'] >= 50]
         
         logger.info(f"📊 Pre-filtered to {len(filtered)} candidates")
         
@@ -493,7 +477,6 @@ class EnhancedSmartMoneyScreener:
                 'grade': grade,
                 # ... Add all other fields ...
                 'sd_score': row.get('supply_demand_score', 50),
-                'inst_score': row.get('institutional_score', 50),
                 'tech_score': tech['technical_score'],
                 'fund_score': fund['fundamental_score'],
                 'analyst_score': analyst['analyst_score'],

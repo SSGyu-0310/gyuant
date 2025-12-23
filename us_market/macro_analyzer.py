@@ -7,13 +7,21 @@ Macro Market Analyzer
 """
 
 import os
+import sys
+from pathlib import Path
 import json
 import requests
-import yfinance as yf
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 from dotenv import load_dotenv
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.append(str(ROOT_DIR))
+
+from utils.fmp_client import get_fmp_client
+from utils.symbols import to_fmp_symbol
 
 # Load .env
 load_dotenv()
@@ -29,15 +37,32 @@ class MacroDataCollector:
     def __init__(self):
         self.macro_tickers = {
             'VIX': '^VIX',
-            'DXY': 'DX-Y.NYB',
-            '2Y_Yield': '^IRX',
-            '10Y_Yield': '^TNX',
+            'DXY': 'DXY',
             'GOLD': 'GC=F',
             'OIL': 'CL=F',
             'BTC': 'BTC-USD',
             'SPY': 'SPY',
             'QQQ': 'QQQ'
         }
+        self.fmp = get_fmp_client()
+        self.lookback_days = 365
+
+    def _get_52w_range(self, symbol: str, fallback_price: float) -> Dict[str, float]:
+        end_date = datetime.utcnow().date()
+        from_date = (end_date - timedelta(days=self.lookback_days)).isoformat()
+        to_date = end_date.isoformat()
+        data = self.fmp.historical_price_full(symbol, from_date=from_date, to_date=to_date)
+        hist_list = data.get("historical", []) if isinstance(data, dict) else []
+        if not hist_list:
+            return {"high": fallback_price, "low": fallback_price, "pct_from_high": 0}
+        highs = [h.get("high") for h in hist_list if h.get("high") is not None]
+        lows = [h.get("low") for h in hist_list if h.get("low") is not None]
+        if not highs or not lows:
+            return {"high": fallback_price, "low": fallback_price, "pct_from_high": 0}
+        high = max(highs)
+        low = min(lows)
+        pct_from_high = ((fallback_price / high) - 1) * 100 if high else 0
+        return {"high": high, "low": low, "pct_from_high": pct_from_high}
     
     def get_current_macro_data(self) -> Dict:
         """Fetch current macro indicators"""
@@ -45,29 +70,25 @@ class MacroDataCollector:
         macro_data = {}
         
         try:
-            tickers = list(self.macro_tickers.values())
-            data = yf.download(tickers, period='5d', progress=False)
+            tickers = [to_fmp_symbol(t) for t in self.macro_tickers.values()]
+            quotes = self.fmp.quote(tickers)
+            quote_map = {q.get("symbol"): q for q in quotes if isinstance(q, dict)}
             
             for name, ticker in self.macro_tickers.items():
                 try:
-                    if ticker not in data['Close'].columns:
+                    fmp_symbol = to_fmp_symbol(ticker)
+                    quote = quote_map.get(fmp_symbol)
+                    if not quote:
                         continue
-                    hist = data['Close'][ticker].dropna()
-                    if len(hist) < 2:
-                        continue
-                    
-                    val = hist.iloc[-1]
-                    prev = hist.iloc[-2]
-                    change = ((val / prev) - 1) * 100
-                    
-                    # 52-week High/Low (simplified)
-                    try:
-                        full_hist = yf.Ticker(ticker).history(period='1y')
-                        high = full_hist['High'].max() if not full_hist.empty else val
-                        low = full_hist['Low'].min() if not full_hist.empty else val
-                        pct_high = ((val / high) - 1) * 100 if high > 0 else 0
-                    except:
-                        high, low, pct_high = val, val, 0
+
+                    val = float(quote.get("price") or 0)
+                    prev = float(quote.get("previousClose") or 0)
+                    change = ((val / prev) - 1) * 100 if prev else 0
+
+                    range_data = self._get_52w_range(fmp_symbol, val)
+                    high = range_data["high"]
+                    low = range_data["low"]
+                    pct_high = range_data["pct_from_high"]
                     
                     macro_data[name] = {
                         'value': round(float(val), 2),
@@ -80,6 +101,29 @@ class MacroDataCollector:
                     logger.debug(f"Error processing {name}: {e}")
                     continue
             
+            # Treasury rates
+            rates = self.fmp.treasury_rates()
+            if rates:
+                latest = rates[0]
+                two_y = float(latest.get("year2") or 0)
+                ten_y = float(latest.get("year10") or 0)
+                if two_y:
+                    macro_data['2Y_Yield'] = {
+                        'value': round(two_y, 2),
+                        'change_1d': 0,
+                        'pct_from_high': 0,
+                        '52w_high': two_y,
+                        '52w_low': two_y
+                    }
+                if ten_y:
+                    macro_data['10Y_Yield'] = {
+                        'value': round(ten_y, 2),
+                        'change_1d': 0,
+                        'pct_from_high': 0,
+                        '52w_high': ten_y,
+                        '52w_low': ten_y
+                    }
+
             # Yield Spread (10Y - 2Y)
             if '2Y_Yield' in macro_data and '10Y_Yield' in macro_data:
                 spread = macro_data['10Y_Yield']['value'] - macro_data['2Y_Yield']['value']

@@ -147,18 +147,6 @@ CONTRACTS: List[Contract] = [
         "ui_safe_default": [],
     },
     {
-        "module": "us_13f",
-        "file_path": Path("us_13f_holdings.csv"),
-        "type": "csv",
-        "required_columns": [
-            "ticker",
-            "institutional_pct",
-            "institutional_score",
-        ],
-        "minimal_mock_rows": [],
-        "ui_safe_default": [],
-    },
-    {
         "module": "us_stocks",
         "file_path": Path("us_stocks_list.csv"),
         "type": "csv",
