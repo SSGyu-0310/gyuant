@@ -181,38 +181,35 @@
                 </div>
             </div>
 
-            <!-- Sector Heatmap & Options Flow Grid -->
-            <div class="grid grid-cols-2 gap-6 h-[300px]">
-                <!-- Sector Heatmap -->
-                <div class="border border-[#2a2a2a] rounded p-4 bg-[#1a1a1a] flex flex-col">
-                    <div class="flex items-center justify-between mb-2">
-                        <h3 class="text-sm font-bold text-gray-300" data-i18n-key="title_sector_perf">Sector Performance
-                        </h3>
-                        <span id="us-heatmap-date" class="text-xs text-gray-500"></span>
-                    </div>
-                    <div id="us-sector-heatmap" class="flex-1 w-full"></div>
+            <!-- Sector Heatmap (Full Width, Larger) -->
+            <div class="border border-[#2a2a2a] rounded-lg p-4 bg-[#1a1a1a] flex flex-col h-[450px]">
+                <div class="flex items-center justify-between mb-3">
+                    <h3 class="text-base font-bold text-gray-200" data-i18n-key="title_sector_perf">Sector Performance
+                    </h3>
+                    <span id="us-heatmap-date" class="text-xs text-gray-500"></span>
                 </div>
-
-                <!-- Options Flow -->
-                <div class="border border-[#2a2a2a] rounded p-4 bg-[#1a1a1a] flex flex-col">
-                    <div class="flex items-center justify-between mb-2">
-                        <div class="flex items-center gap-2">
-                            <h3 class="text-sm font-bold text-gray-300" data-i18n-key="title_options_flow">Options Flow
-                                (Smart Money)</h3>
-                            <span id="badge-options" class="text-[11px] text-gray-500"></span>
-                        </div>
-                        <span id="us-options-timestamp" class="text-xs text-gray-500"></span>
-                    </div>
-                    <div id="us-options-flow" class="flex-1 overflow-y-auto space-y-2 custom-scrollbar">
-                        <!-- Options Items -->
-                    </div>
-                </div>
+                <div id="us-sector-heatmap" class="flex-1 w-full"></div>
             </div>
         </div>
     </div>
 
-    <!-- Bottom Section: Unusual Trades & Top Movers (2-Column Grid) -->
-    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-6">
+    <!-- Bottom Section: Options Flow, Unusual Trades & Top Movers (3-Column Grid) -->
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mt-6">
+        <!-- Options Flow (Moved from middle section) -->
+        <section class="border border-gray-800 rounded-lg p-4 bg-gray-900/50 backdrop-blur-sm">
+            <div class="flex items-center justify-between mb-3">
+                <div class="flex items-center gap-2">
+                    <h3 class="text-sm font-bold text-gray-300" data-i18n-key="title_options_flow">Options Flow
+                        (Smart Money)</h3>
+                    <span id="badge-options" class="text-[11px] text-gray-500"></span>
+                </div>
+                <span id="us-options-timestamp" class="text-xs text-gray-500"></span>
+            </div>
+            <div id="us-options-flow" class="space-y-2 h-[400px] overflow-y-auto custom-scrollbar">
+                <!-- Options Items -->
+            </div>
+        </section>
+
         <!-- Unusual Trades -->
         <section class="border border-gray-800 rounded-lg p-4 bg-gray-900/50 backdrop-blur-sm">
             <div class="flex items-center justify-between mb-3">

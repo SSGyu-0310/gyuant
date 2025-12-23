@@ -864,20 +864,31 @@
 
         const options = {
             series: seriesData,
-            chart: { type: "treemap", height: 300, toolbar: { show: false }, fontFamily: "Inter, sans-serif", background: "transparent" },
+            chart: { type: "treemap", height: 400, toolbar: { show: false }, fontFamily: "Inter, sans-serif", background: "transparent" },
             legend: { show: false },
             plotOptions: { treemap: { distributed: true, enableShades: false, useFillColorAsStroke: true } },
             dataLabels: {
                 enabled: true,
-                style: { fontSize: "10px", fontWeight: "bold", colors: ["#ffffff"] },
+                style: { fontSize: "11px", fontWeight: "bold", colors: ["#ffffff"] },
                 formatter: function (text, op) {
                     try {
                         const dp = op.w.config.series[op.seriesIndex].data[op.dataPointIndex];
+                        const yValue = dp?.y || 0;
                         const change = dp?.meta?.change;
-                        if (Number.isFinite(Number(change))) {
+
+                        // Calculate relative size: only show % for larger cells
+                        // Get total of all y values in the series
+                        const seriesTotal = op.w.config.series.reduce((acc, s) =>
+                            acc + s.data.reduce((sum, d) => sum + (d.y || 0), 0), 0);
+                        const ratio = yValue / seriesTotal;
+
+                        // Only show percentage if this cell is >= 0.5% of total
+                        if (ratio >= 0.005 && Number.isFinite(Number(change))) {
                             const c = Number(change);
                             return [text, `${c >= 0 ? "+" : ""}${c.toFixed(1)}%`];
                         }
+                        // For small cells, just show ticker (no percentage)
+                        return text;
                     } catch (e) { }
                     return text;
                 },

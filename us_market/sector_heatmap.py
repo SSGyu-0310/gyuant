@@ -20,6 +20,21 @@ logger = logging.getLogger(__name__)
 class SectorHeatmapCollector:
     """Collect sector ETF performance data for heatmap visualization"""
     
+    # Mapping from short sector codes (in SECTOR_MAP) to full sector names (for ETFs)
+    SECTOR_NAME_MAP = {
+        'Tech': 'Technology',
+        'Fin': 'Financials',
+        'Health': 'Healthcare',
+        'Energy': 'Energy',
+        'Cons': 'Consumer Disc.',
+        'Staple': 'Consumer Staples',
+        'Indust': 'Industrials',
+        'Mater': 'Materials',
+        'Util': 'Utilities',
+        'REIT': 'Real Estate',
+        'Comm': 'Comm. Services',
+    }
+    
     def __init__(self):
         # Sector ETFs with full names and colors
         self.sector_etfs = {
@@ -36,8 +51,12 @@ class SectorHeatmapCollector:
             'XLC': {'name': 'Comm. Services', 'color': '#9370DB'},
         }
         
-        # Sector stocks for detail map
-        self.sector_stocks = {
+        # Load sector stocks from CSV or use fallback
+        self.sector_stocks = self._load_sectors_from_csv()
+    
+    def _load_sectors_from_csv(self) -> Dict[str, List[str]]:
+        """Load sector stocks from us_sectors.csv with fallback to hardcoded data."""
+        fallback = {
             'Technology': ['AAPL', 'MSFT', 'NVDA', 'AVGO', 'ORCL', 'CRM', 'AMD', 'ADBE', 'CSCO', 'INTC'],
             'Financials': ['BRK-B', 'JPM', 'V', 'MA', 'BAC', 'WFC', 'GS', 'MS', 'C', 'AXP'],
             'Healthcare': ['UNH', 'JNJ', 'LLY', 'PFE', 'MRK', 'ABBV', 'TMO', 'ABT', 'DHR', 'BMY'],
@@ -50,6 +69,53 @@ class SectorHeatmapCollector:
             'Real Estate': ['PLD', 'AMT', 'EQIX', 'PSA', 'CCI', 'O', 'SPG', 'WELL', 'DLR', 'AVB'],
             'Comm. Services': ['META', 'GOOGL', 'GOOG', 'NFLX', 'DIS', 'CMCSA', 'VZ', 'T', 'TMUS', 'ATVI'],
         }
+        
+        # Try to load from CSV
+        csv_candidates = [
+            os.path.join(os.path.dirname(__file__), 'us_sectors.csv'),
+            os.path.join(os.getenv('DATA_DIR', '.'), 'us_sectors.csv'),
+        ]
+        
+        for csv_path in csv_candidates:
+            if not os.path.exists(csv_path):
+                continue
+            try:
+                df = pd.read_csv(csv_path)
+                if 'ticker' not in df.columns or 'sector' not in df.columns:
+                    logger.warning(f"CSV missing required columns: {csv_path}")
+                    continue
+                
+                df = df.dropna(subset=['ticker', 'sector'])
+                if df.empty:
+                    continue
+                
+                # Group by sector and convert short codes to full names
+                sector_stocks: Dict[str, List[str]] = {}
+                for _, row in df.iterrows():
+                    short_sector = str(row['sector']).strip()
+                    full_sector = self.SECTOR_NAME_MAP.get(short_sector, short_sector)
+                    ticker = str(row['ticker']).strip().upper()
+                    
+                    if full_sector not in sector_stocks:
+                        sector_stocks[full_sector] = []
+                    sector_stocks[full_sector].append(ticker)
+                
+                # Only use if we have reasonable coverage
+                if len(sector_stocks) >= 5:
+                    logger.info(f"✅ Loaded {sum(len(v) for v in sector_stocks.values())} stocks from {csv_path}")
+                    
+                    # Log sector counts
+                    for sec, stocks in sorted(sector_stocks.items()):
+                        logger.debug(f"   {sec}: {len(stocks)} stocks")
+                    
+                    return sector_stocks
+                    
+            except Exception as e:
+                logger.warning(f"Error loading {csv_path}: {e}")
+                continue
+        
+        logger.info("Using fallback sector stocks (CSV not found or invalid)")
+        return fallback
     
     def get_sector_performance(self, period: str = '1d') -> Dict:
         """Get sector ETF performance"""
@@ -182,13 +248,15 @@ class SectorHeatmapCollector:
             return {'error': str(e)}
             
     def _get_color(self, change: float) -> str:
-        """Get color based on change percentage"""
-        if change >= 3: return '#00C853'
-        elif change >= 1: return '#4CAF50'
-        elif change >= 0: return '#81C784'
-        elif change >= -1: return '#EF9A9A'
-        elif change >= -3: return '#F44336'
-        else: return '#B71C1C'
+        """Get color based on change percentage (muted/desaturated palette)"""
+        # Muted green palette for positive changes
+        if change >= 3: return '#2E8B57'      # SeaGreen (muted dark green)
+        elif change >= 1: return '#4A9A6A'    # Medium muted green
+        elif change >= 0: return '#6AAF8B'    # Light muted green
+        # Muted red palette for negative changes  
+        elif change >= -1: return '#C08080'   # Muted light red/pink
+        elif change >= -3: return '#B25A5A'   # Medium muted red
+        else: return '#8B3A3A'                # Dark muted red
 
     def save_data(self, output_dir: str = '.'):
         """Save heatmap data to JSON"""
@@ -198,9 +266,17 @@ class SectorHeatmapCollector:
         # Full market map
         market_map = self.get_full_market_map('5d')
         
-        # Combine data
+        # Flatten structure for frontend compatibility
+        # Frontend expects 'series' at top level, and optionally 'sectors' for ETF data
         output = {
             'timestamp': datetime.now().isoformat(),
+            'data_date': datetime.now().strftime('%Y-%m-%d'),
+            # Top-level series for treemap (from market_map)
+            'series': market_map.get('series', []),
+            # Sector ETF performance data
+            'sectors': sector_data.get('sectors', []),
+            'summary': sector_data.get('summary', {}),
+            # Keep original nested structure for backward compatibility
             'sector_performance': sector_data,
             'market_map': market_map
         }
