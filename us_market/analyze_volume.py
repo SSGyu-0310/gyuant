@@ -24,10 +24,10 @@ logger = logging.getLogger(__name__)
 class VolumeAnalyzer:
     """Volume-based technical analysis for supply/demand detection"""
     
-    def __init__(self, data_dir: str = '.'):
-        self.data_dir = data_dir
-        self.prices_file = os.path.join(data_dir, 'us_daily_prices.csv')
-        self.output_file = os.path.join(data_dir, 'us_volume_analysis.csv')
+    def __init__(self, data_dir: Optional[str] = None):
+        self.data_dir = data_dir or os.getenv('DATA_DIR', '.')
+        self.prices_file = os.path.join(self.data_dir, 'us_daily_prices.csv')
+        self.output_file = os.path.join(self.data_dir, 'us_volume_analysis.csv')
         
     def load_prices(self) -> pd.DataFrame:
         """Load daily price data"""
@@ -212,6 +212,25 @@ class VolumeAnalyzer:
         
         # Load data
         df = self.load_prices()
+        output_cols = [
+            'ticker',
+            'name',
+            'date',
+            'obv',
+            'obv_change_20d',
+            'ad_line',
+            'ad_change_20d',
+            'mfi',
+            'vol_ratio_5d_20d',
+            'surge_count_5d',
+            'surge_count_20d',
+            'supply_demand_score',
+            'supply_demand_stage'
+        ]
+        if df.empty:
+            logger.warning("⚠️ Price data is empty. Writing empty volume analysis output.")
+            pd.DataFrame(columns=output_cols).to_csv(self.output_file, index=False)
+            return pd.DataFrame(columns=output_cols)
         
         # Get unique tickers
         tickers = df['ticker'].unique()
@@ -237,6 +256,8 @@ class VolumeAnalyzer:
         
         # Create DataFrame
         results_df = pd.DataFrame(results)
+        if results_df.empty:
+            results_df = pd.DataFrame(columns=output_cols)
         
         # Save results
         results_df.to_csv(self.output_file, index=False)
@@ -244,9 +265,10 @@ class VolumeAnalyzer:
         
         # Print summary
         logger.info("\n📊 Summary:")
-        stage_counts = results_df['supply_demand_stage'].value_counts()
-        for stage, count in stage_counts.items():
-            logger.info(f"   {stage}: {count} stocks")
+        if not results_df.empty:
+            stage_counts = results_df['supply_demand_stage'].value_counts()
+            for stage, count in stage_counts.items():
+                logger.info(f"   {stage}: {count} stocks")
         
         return results_df
 
@@ -256,7 +278,7 @@ def main():
     import argparse
     
     parser = argparse.ArgumentParser(description='US Stock Volume Analysis')
-    parser.add_argument('--dir', default='.', help='Data directory')
+    parser.add_argument('--dir', default=os.getenv('DATA_DIR', '.'), help='Data directory')
     args = parser.parse_args()
     
     analyzer = VolumeAnalyzer(data_dir=args.dir)
@@ -264,9 +286,10 @@ def main():
     
     # Show top 10 accumulation stocks
     print("\n🔥 Top 10 Accumulation Stocks:")
-    top_10 = results.nlargest(10, 'supply_demand_score')
-    for _, row in top_10.iterrows():
-        print(f"   {row['ticker']}: Score {row['supply_demand_score']} - {row['supply_demand_stage']}")
+    if not results.empty and 'supply_demand_score' in results.columns:
+        top_10 = results.nlargest(10, 'supply_demand_score')
+        for _, row in top_10.iterrows():
+            print(f"   {row['ticker']}: Score {row['supply_demand_score']} - {row['supply_demand_stage']}")
 
 
 if __name__ == "__main__":

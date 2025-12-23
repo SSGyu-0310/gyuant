@@ -12,7 +12,14 @@ import subprocess
 import logging
 import time
 from datetime import datetime
+from pathlib import Path
 import argparse
+import shutil
+
+try:
+    from dotenv import load_dotenv
+except Exception:
+    load_dotenv = None
 
 # Logging Configuration
 logging.basicConfig(
@@ -21,6 +28,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+if load_dotenv:
+    load_dotenv()
+    root_env = Path(__file__).resolve().parents[1] / ".env"
+    if root_env.exists():
+        load_dotenv(root_env)
 
 # ============================================================
 # Pipeline Definition (PART2/PART3 Blueprint)
@@ -34,7 +46,6 @@ PHASE_1_DATA = [
 # Phase 2: Basic Analysis
 PHASE_2_ANALYSIS = [
     ('analyze_volume.py', 'Volume Analysis', 300),
-    ('analyze_13f.py', '13F Institutional Analysis', 600),  # Increased timeout
     ('analyze_etf_flows.py', 'ETF Flow Analysis', 300),
 ]
 
@@ -55,6 +66,28 @@ PHASE_4_AI = [
     ('economic_calendar.py', 'Economic Calendar', 300),
 ]
 
+DIR_AWARE_SCRIPTS = {
+    "create_us_daily_prices.py",
+    "analyze_volume.py",
+    "analyze_etf_flows.py",
+    "smart_money_screener_v2.py",
+    "sector_heatmap.py",
+    "options_flow.py",
+    "insider_tracker.py",
+    "portfolio_risk.py",
+    "ai_summary_generator.py",
+    "final_report_generator.py",
+    "macro_analyzer.py",
+    "economic_calendar.py",
+}
+
+STREAM_OUTPUT_SCRIPTS = {
+    "create_us_daily_prices.py",
+    "analyze_volume.py",
+    "analyze_etf_flows.py",
+    "smart_money_screener_v2.py",
+}
+
 # All output files to check
 OUTPUT_FILES = [
     # Phase 1
@@ -62,7 +95,6 @@ OUTPUT_FILES = [
     'us_stocks_list.csv',
     # Phase 2
     'us_volume_analysis.csv',
-    'us_13f_holdings.csv',
     'us_etf_flows.csv',
     'etf_flow_analysis.json',
     # Phase 3
@@ -80,7 +112,32 @@ OUTPUT_FILES = [
 ]
 
 
-def run_script(script_name: str, description: str, timeout: int = 600, args: list = None) -> bool:
+def _resolve_path(val: str, base_dir: Path) -> Path:
+    path = Path(val)
+    return path if path.is_absolute() else (base_dir / path).resolve()
+
+
+def _normalize_env_paths(env: dict, base_dir: Path) -> dict:
+    normalized = env.copy()
+    data_dir = normalized.get("DATA_DIR") or "us_market"
+    data_path = _resolve_path(data_dir, base_dir)
+    normalized["DATA_DIR"] = str(data_path)
+
+    log_dir = normalized.get("LOG_DIR") or "logs"
+    normalized["LOG_DIR"] = str(_resolve_path(log_dir, base_dir))
+
+    history_dir = normalized.get("HISTORY_DIR") or str(data_path / "history")
+    normalized["HISTORY_DIR"] = str(_resolve_path(history_dir, base_dir))
+    return normalized
+
+
+def run_script(
+    script_name: str,
+    description: str,
+    timeout: int = 600,
+    args: list = None,
+    stream_output: bool = False,
+) -> bool:
     """Run a Python script and return success status"""
     try:
         cmd = [sys.executable, script_name]
@@ -91,19 +148,28 @@ def run_script(script_name: str, description: str, timeout: int = 600, args: lis
         start = time.time()
         
         # Set UTF-8 encoding for subprocess to handle emoji characters on Windows
-        env = os.environ.copy()
+        project_root = Path(__file__).resolve().parents[1]
+        env = _normalize_env_paths(os.environ.copy(), project_root)
         env['PYTHONIOENCODING'] = 'utf-8'
         
-        result = subprocess.run(
-            cmd,
-            cwd=os.path.dirname(os.path.abspath(__file__)),
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            env=env,
-            encoding='utf-8',
-            errors='replace'
-        )
+        if stream_output:
+            result = subprocess.run(
+                cmd,
+                cwd=os.path.dirname(os.path.abspath(__file__)),
+                timeout=timeout,
+                env=env,
+            )
+        else:
+            result = subprocess.run(
+                cmd,
+                cwd=os.path.dirname(os.path.abspath(__file__)),
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                env=env,
+                encoding='utf-8',
+                errors='replace'
+            )
         
         elapsed = time.time() - start
         
@@ -111,8 +177,8 @@ def run_script(script_name: str, description: str, timeout: int = 600, args: lis
             logger.info(f"✅ {description} completed ({elapsed:.1f}s)")
             return True
         else:
-            logger.error(f"❌ {description} failed:")
-            if result.stderr:
+            logger.error(f"❌ {description} failed (exit code {result.returncode})")
+            if not stream_output and result.stderr:
                 # Only show last 500 chars of error
                 error_msg = result.stderr[-500:] if len(result.stderr) > 500 else result.stderr
                 logger.error(error_msg)
@@ -143,9 +209,27 @@ def run_phase(phase_name: str, scripts: list, skip_ai: bool = False, script_args
             continue
         
         args = script_args.get(script_name, [])
-        results[script_name] = run_script(script_name, description, timeout, args)
+        stream_output = script_name in STREAM_OUTPUT_SCRIPTS
+        results[script_name] = run_script(script_name, description, timeout, args, stream_output=stream_output)
     
     return results
+
+
+def _ensure_price_file(data_dir: Path, logger: logging.Logger) -> None:
+    target = data_dir / "us_daily_prices.csv"
+    if target.exists():
+        return
+    candidates = [
+        data_dir / "us_market" / "us_daily_prices.csv",
+        data_dir.parent / "us_market" / "us_daily_prices.csv",
+        data_dir.parent / "us_market" / "us_market" / "us_daily_prices.csv",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(candidate, target)
+            logger.warning("⚠️ us_daily_prices.csv found at %s, copied to %s", candidate, target)
+            return
 
 
 def check_output_files(output_dir: str) -> None:
@@ -211,6 +295,10 @@ Examples:
     
     all_results = {}
     script_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = Path(__file__).resolve().parents[1]
+    env_for_args = _normalize_env_paths(os.environ.copy(), project_root)
+    resolved_data_dir = Path(env_for_args["DATA_DIR"]).resolve()
+    dir_args = {name: ["--dir", str(resolved_data_dir)] for name in DIR_AWARE_SCRIPTS}
     
     # Determine which phases to run
     run_data = not (args.analysis_only or args.screening_only or args.ai_only)
@@ -220,10 +308,14 @@ Examples:
     
     # Phase 1: Data Collection
     if run_data:
-        price_args = {'create_us_daily_prices.py': ['--full'] if args.full else []}
+        price_args = dict(dir_args)
+        if args.full:
+            price_args["create_us_daily_prices.py"] = price_args.get("create_us_daily_prices.py", []) + ["--full"]
         results = run_phase("Phase 1: Data Collection", PHASE_1_DATA, script_args=price_args)
         all_results.update(results)
         
+        _ensure_price_file(resolved_data_dir, logger)
+
         if args.prices_only:
             logger.info("\n🎉 Price-only update complete!")
             check_output_files(script_dir)
@@ -231,17 +323,17 @@ Examples:
     
     # Phase 2: Basic Analysis
     if run_analysis:
-        results = run_phase("Phase 2: Basic Analysis", PHASE_2_ANALYSIS)
+        results = run_phase("Phase 2: Basic Analysis", PHASE_2_ANALYSIS, script_args=dir_args)
         all_results.update(results)
     
     # Phase 3: Screening
     if run_screening:
-        results = run_phase("Phase 3: Screening & Analysis", PHASE_3_SCREENING)
+        results = run_phase("Phase 3: Screening & Analysis", PHASE_3_SCREENING, script_args=dir_args)
         all_results.update(results)
     
     # Phase 4: AI Analysis
     if run_ai:
-        results = run_phase("Phase 4: AI Analysis", PHASE_4_AI, skip_ai=args.quick)
+        results = run_phase("Phase 4: AI Analysis", PHASE_4_AI, skip_ai=args.quick, script_args=dir_args)
         all_results.update(results)
     
     # Summary

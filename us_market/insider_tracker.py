@@ -6,12 +6,20 @@ Tracks insider buying/selling activity from SEC filings
 """
 
 import os
+import sys
+from pathlib import Path
 import json
 import logging
 import pandas as pd
-import yfinance as yf
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.append(str(ROOT_DIR))
+
+from utils.fmp_client import get_fmp_client
+from utils.symbols import to_fmp_symbol
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -23,53 +31,45 @@ class InsiderTracker:
     def __init__(self, data_dir: str = '.'):
         self.data_dir = data_dir
         self.output_file = os.path.join(data_dir, 'insider_moves.json')
+        self.fmp = get_fmp_client()
         
     def get_insider_activity(self, ticker: str) -> List[Dict]:
         """Get insider transactions for a ticker"""
         try:
-            stock = yf.Ticker(ticker)
-            df = stock.insider_transactions
-            
-            if df is None or df.empty:
+            records = self.fmp.insider_trading(to_fmp_symbol(ticker), limit=100)
+            if not records:
                 return []
-            
-            # Filter for recent transactions (last 6 months)
+
             cutoff = pd.Timestamp.now() - pd.Timedelta(days=180)
-            
-            # Process transactions
             recent_transactions = []
-            
-            for idx, row in df.iterrows():
+
+            for row in records:
                 try:
-                    # Check date
-                    if hasattr(idx, 'date'):
-                        trans_date = idx
-                    else:
-                        trans_date = pd.Timestamp(idx)
-                    
+                    date_str = row.get('transactionDate') or row.get('filingDate')
+                    if not date_str:
+                        continue
+                    trans_date = pd.to_datetime(date_str)
                     if trans_date < cutoff:
                         continue
-                    
-                    # Get transaction type
-                    text = str(row.get('Text', '')).lower()
-                    transaction = str(row.get('Transaction', '')).lower()
-                    
-                    if 'purchase' in text or 'buy' in text or 'purchase' in transaction:
+
+                    transaction = str(row.get('transactionType', '')).lower()
+                    if 'purchase' in transaction or 'buy' in transaction:
                         trans_type = 'Buy'
-                    elif 'sale' in text or 'sell' in text or 'sale' in transaction:
+                    elif 'sale' in transaction or 'sell' in transaction:
                         trans_type = 'Sell'
                     else:
                         trans_type = 'Other'
-                    
-                    # Get values
-                    value = float(row.get('Value', 0) or 0)
-                    shares = int(row.get('Shares', 0) or 0)
-                    insider = row.get('Insider', 'N/A')
-                    
-                    # Only include buys and significant sells
+
+                    value = float(row.get('value') or 0)
+                    shares = int(row.get('securitiesTransacted') or row.get('shares') or 0)
+                    price = float(row.get('price') or 0)
+                    if value == 0 and shares and price:
+                        value = shares * price
+                    insider = row.get('insiderName') or row.get('reportingName') or 'N/A'
+
                     if trans_type == 'Other':
                         continue
-                    
+
                     recent_transactions.append({
                         'date': str(trans_date.date()) if hasattr(trans_date, 'date') else str(trans_date)[:10],
                         'insider': insider,
@@ -77,11 +77,11 @@ class InsiderTracker:
                         'value': value,
                         'shares': shares
                     })
-                    
-                except Exception as e:
+
+                except Exception:
                     continue
-            
-            return recent_transactions[:10]  # Return top 10 most recent
+
+            return recent_transactions[:10]
             
         except Exception as e:
             logger.debug(f"Error getting insider data for {ticker}: {e}")

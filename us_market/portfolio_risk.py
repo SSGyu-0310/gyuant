@@ -6,13 +6,21 @@ Analyzes correlation and volatility risk for a portfolio
 """
 
 import os
+import sys
+from pathlib import Path
 import json
 import logging
 import pandas as pd
 import numpy as np
-import yfinance as yf
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.append(str(ROOT_DIR))
+
+from utils.fmp_client import get_fmp_client
+from utils.symbols import to_fmp_symbol
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -24,6 +32,25 @@ class PortfolioRiskAnalyzer:
     def __init__(self, data_dir: str = '.'):
         self.data_dir = data_dir
         self.output_file = os.path.join(data_dir, 'portfolio_risk.json')
+        self.fmp = get_fmp_client()
+        self.lookback_days = 182
+
+    def _fetch_close_series(self, ticker: str) -> pd.Series:
+        end_date = datetime.utcnow().date()
+        from_date = (end_date - timedelta(days=self.lookback_days)).isoformat()
+        to_date = end_date.isoformat()
+        data = self.fmp.historical_price_full(
+            to_fmp_symbol(ticker),
+            from_date=from_date,
+            to_date=to_date,
+        )
+        hist_list = data.get("historical", []) if isinstance(data, dict) else []
+        if not hist_list:
+            return pd.Series(dtype=float)
+        df = pd.DataFrame(hist_list)
+        df['date'] = pd.to_datetime(df['date'])
+        df = df.sort_values('date')
+        return df.set_index('date')['close'].astype(float)
     
     def analyze_portfolio(self, tickers: List[str], weights: List[float] = None) -> Dict:
         """
@@ -39,15 +66,16 @@ class PortfolioRiskAnalyzer:
             return {'error': 'Need at least 2 tickers for portfolio analysis'}
         
         try:
-            # Download price data
-            data = yf.download(tickers, period='6mo', progress=False)['Close']
-            
-            if data.empty:
+            series_map = {}
+            for ticker in tickers:
+                series = self._fetch_close_series(ticker)
+                if not series.empty:
+                    series_map[ticker] = series
+
+            if not series_map:
                 return {'error': 'No price data available'}
-            
-            # Handle single ticker case in column structure
-            if len(tickers) == 1:
-                data = pd.DataFrame({tickers[0]: data})
+
+            data = pd.DataFrame(series_map)
             
             # Drop any tickers with missing data
             data = data.dropna(axis=1, how='all')
@@ -112,8 +140,8 @@ class PortfolioRiskAnalyzer:
             
             # === Beta (vs SPY) ===
             try:
-                spy_data = yf.download('SPY', period='6mo', progress=False)['Close']
-                spy_returns = spy_data.pct_change().dropna()
+                spy_series = self._fetch_close_series('SPY')
+                spy_returns = spy_series.pct_change().dropna()
                 
                 # Align dates
                 common_dates = portfolio_returns.index.intersection(spy_returns.index)

@@ -14,12 +14,10 @@
             retry: '재시도',
             updated: '업데이트',
             stale_banner: '데이터가 오래되었거나 누락됨',
-            tab_kr: '국내 시장',
             tab_us: '미국 시장',
             tab_calendar: '경제 캘린더',
             tab_risk: '리스크',
             tab_holdings: '보유 매트릭스',
-            title_kr_market: '국내 시장',
             title_us_market: '미국 시장',
             search_placeholder: '이름, 티커 또는 기능 검색 (/)',
             title_indices: '시장 지수',
@@ -69,12 +67,10 @@
             retry: 'Retry',
             updated: 'Updated',
             stale_banner: 'Data stale or missing',
-            tab_kr: 'KR Market',
             tab_us: 'US Market',
             tab_calendar: 'Economic Calendar',
             tab_risk: 'Risk',
             tab_holdings: 'Holdings Matrix',
-            title_kr_market: 'KR Market',
             title_us_market: 'US Market',
             search_placeholder: 'Search for a name, ticker, or function (/)',
             title_indices: 'Market Indices',
@@ -307,7 +303,6 @@
         document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
         el.classList.add('active');
 
-        document.getElementById('content-kr-market').classList.add('hidden');
         document.getElementById('content-us-market').classList.add('hidden');
         document.getElementById('content-economic-calendar').classList.add('hidden');
         document.getElementById('content-risk').classList.add('hidden');
@@ -315,10 +310,7 @@
 
         const headerTitle = document.getElementById('main-header-title');
 
-        if (tabKey === 'kr') {
-            document.getElementById('content-kr-market').classList.remove('hidden');
-            if (headerTitle) headerTitle.textContent = t('title_kr_market');
-        } else if (tabKey === 'us') {
+        if (tabKey === 'us') {
             document.getElementById('content-us-market').classList.remove('hidden');
             if (headerTitle) headerTitle.textContent = t('title_us_market');
             if (!window.usDashboardLoaded) {
@@ -366,7 +358,6 @@
             if (tabKey === 'us') headerTitle.textContent = t('title_us_market');
             else if (tabKey === 'calendar') headerTitle.textContent = t('title_calendar');
             else if (tabKey === 'risk' || tabKey === 'holdings') headerTitle.textContent = activeTab.textContent;
-            else headerTitle.textContent = t('title_kr_market');
         }
     }
 
@@ -449,6 +440,11 @@
         loadStatusSnapshot();
         initTheme();
         initLang();
+        const activeTab = document.querySelector('.nav-tab.active');
+        if (activeTab && activeTab.getAttribute('data-tab') === 'us') {
+            updateUSMarketDashboard();
+            window.usDashboardLoaded = true;
+        }
         const initialTicker = new URLSearchParams(window.location.search).get('ticker');
         if (initialTicker) {
             openTickerDrawer(initialTicker.toUpperCase());

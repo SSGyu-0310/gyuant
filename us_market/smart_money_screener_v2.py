@@ -11,15 +11,25 @@ Comprehensive analysis combining:
 """
 
 import os
+import sys
+from pathlib import Path
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import pandas as pd
 import numpy as np
-import yfinance as yf
 import logging
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 from tqdm import tqdm
 import warnings
 warnings.filterwarnings('ignore')
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.append(str(ROOT_DIR))
+
+from utils.fmp_client import FMPClient
+from utils.symbols import to_fmp_symbol
 
 # Logging Configuration
 logging.basicConfig(
@@ -45,12 +55,16 @@ class EnhancedSmartMoneyScreener:
         
         # Load analysis data
         self.volume_df = None
-        self.holdings_df = None
         self.etf_df = None
         self.prices_df = None
         
-        # Cache for yfinance data
-        self.yf_cache = {}
+        self._client_local = threading.local()
+        self._cache_lock = threading.Lock()
+        self.profile_cache = {}
+        self.quote_cache = {}
+        self.metrics_cache = {}
+        self.ratios_cache = {}
+        self.history_cache = {}
         
         # S&P 500 benchmark data
         self.spy_data = None
@@ -67,15 +81,6 @@ class EnhancedSmartMoneyScreener:
                 logger.warning("⚠️ Volume analysis not found")
                 return False
             
-            # 13F Holdings
-            holdings_file = os.path.join(self.data_dir, 'us_13f_holdings.csv')
-            if os.path.exists(holdings_file):
-                self.holdings_df = pd.read_csv(holdings_file)
-                logger.info(f"✅ Loaded 13F holdings: {len(self.holdings_df)} stocks")
-            else:
-                logger.warning("⚠️ 13F holdings not found")
-                return False
-            
             # ETF Flows
             etf_file = os.path.join(self.data_dir, 'us_etf_flows.csv')
             if os.path.exists(etf_file):
@@ -83,20 +88,85 @@ class EnhancedSmartMoneyScreener:
             
             # Load SPY for relative strength
             logger.info("📈 Loading SPY benchmark data...")
-            spy = yf.Ticker("SPY")
-            self.spy_data = spy.history(period="3mo")
+            self.spy_data = self._get_history("SPY", days=90)
             
             return True
             
         except Exception as e:
             logger.error(f"❌ Error loading data: {e}")
             return False
+
+    def _get_client(self) -> FMPClient:
+        client = getattr(self._client_local, "client", None)
+        if client is None:
+            client = FMPClient()
+            self._client_local.client = client
+        return client
+
+    def _get_cached(self, cache: Dict[Any, Any], key: Any, loader):
+        with self._cache_lock:
+            if key in cache:
+                return cache[key]
+        value = loader()
+        with self._cache_lock:
+            cache[key] = value
+        return value
+
+    def _get_profile(self, ticker: str) -> Dict:
+        return self._get_cached(
+            self.profile_cache,
+            ticker,
+            lambda: self._get_client().profile(to_fmp_symbol(ticker)),
+        )
+
+    def _get_quote(self, ticker: str) -> Dict:
+        def loader():
+            quotes = self._get_client().quote([to_fmp_symbol(ticker)])
+            return quotes[0] if quotes else {}
+
+        return self._get_cached(self.quote_cache, ticker, loader)
+
+    def _get_key_metrics(self, ticker: str) -> Dict:
+        return self._get_cached(
+            self.metrics_cache,
+            ticker,
+            lambda: self._get_client().key_metrics_ttm(to_fmp_symbol(ticker)),
+        )
+
+    def _get_ratios(self, ticker: str) -> Dict:
+        return self._get_cached(
+            self.ratios_cache,
+            ticker,
+            lambda: self._get_client().ratios_ttm(to_fmp_symbol(ticker)),
+        )
+
+    def _get_history(self, ticker: str, days: int = 180) -> pd.DataFrame:
+        cache_key = (ticker, days)
+
+        def loader():
+            end_date = datetime.utcnow().date()
+            from_date = (end_date - timedelta(days=days)).isoformat()
+            to_date = end_date.isoformat()
+            data = self._get_client().historical_price_full(
+                to_fmp_symbol(ticker),
+                from_date=from_date,
+                to_date=to_date,
+            )
+            hist_list = data.get("historical", []) if isinstance(data, dict) else []
+            if not hist_list:
+                return pd.DataFrame()
+            df = pd.DataFrame(hist_list)
+            df['Date'] = pd.to_datetime(df['date'])
+            df = df.sort_values('Date')
+            df = df.rename(columns={'close': 'Close'})
+            return df
+
+        return self._get_cached(self.history_cache, cache_key, loader)
     
     def get_technical_analysis(self, ticker: str) -> Dict:
         """Calculate technical indicators"""
         try:
-            stock = yf.Ticker(ticker)
-            hist = stock.history(period="6mo")
+            hist = self._get_history(ticker, days=180)
             
             if len(hist) < 50:
                 return self._default_technical()
@@ -204,27 +274,28 @@ class EnhancedSmartMoneyScreener:
     def get_fundamental_analysis(self, ticker: str) -> Dict:
         """Get fundamental/valuation metrics"""
         try:
-            stock = yf.Ticker(ticker)
-            info = stock.info
+            profile = self._get_profile(ticker)
+            metrics = self._get_key_metrics(ticker)
+            ratios = self._get_ratios(ticker)
             
             # Valuation
-            pe_ratio = info.get('trailingPE', 0) or 0
-            forward_pe = info.get('forwardPE', 0) or 0
-            pb_ratio = info.get('priceToBook', 0) or 0
+            pe_ratio = metrics.get('peRatioTTM') or ratios.get('priceEarningsRatioTTM') or 0
+            forward_pe = profile.get('pe') or ratios.get('priceEarningsRatioTTM') or 0
+            pb_ratio = ratios.get('priceToBookRatioTTM') or metrics.get('pbRatioTTM') or 0
             
-            # Growth
-            revenue_growth = info.get('revenueGrowth', 0) or 0
-            earnings_growth = info.get('earningsGrowth', 0) or 0
+            # Growth (fallback to 0 if not available)
+            revenue_growth = profile.get('revenueGrowth') or 0
+            earnings_growth = profile.get('earningsGrowth') or 0
             
             # Profitability
-            profit_margin = info.get('profitMargins', 0) or 0
-            roe = info.get('returnOnEquity', 0) or 0
+            profit_margin = ratios.get('netProfitMarginTTM') or metrics.get('netProfitMarginTTM') or 0
+            roe = metrics.get('roeTTM') or ratios.get('returnOnEquityTTM') or 0
             
             # Market Cap
-            market_cap = info.get('marketCap', 0) or 0
+            market_cap = profile.get('mktCap') or profile.get('marketCap') or 0
             
             # Dividend
-            dividend_yield = info.get('dividendYield', 0) or 0
+            dividend_yield = ratios.get('dividendYieldTTM') or 0
             
             # Fundamental Score (0-100)
             fund_score = 50
@@ -299,18 +370,36 @@ class EnhancedSmartMoneyScreener:
     def get_analyst_ratings(self, ticker: str) -> Dict:
         """Get analyst consensus and target price"""
         try:
-            stock = yf.Ticker(ticker)
-            info = stock.info
+            profile = self._get_profile(ticker)
+            quote = self._get_quote(ticker)
+            client = self._get_client()
+            ratings = client.ratings_snapshot(to_fmp_symbol(ticker))
+            consensus = client.price_target_consensus(to_fmp_symbol(ticker))
             
-            # Get company name
-            company_name = info.get('longName', '') or info.get('shortName', '') or ticker
+            company_name = profile.get('companyName') or profile.get('name') or ticker
             
-            current_price = info.get('currentPrice', 0) or info.get('regularMarketPrice', 0) or 0
-            target_price = info.get('targetMeanPrice', 0) or 0
+            current_price = quote.get('price') or profile.get('price') or 0
+            target_price = (
+                consensus.get('targetConsensus')
+                or consensus.get('targetMedian')
+                or consensus.get('targetMean')
+                or 0
+            )
             
-            # Recommendation
-            recommendation = info.get('recommendationKey', 'none')
-            num_analysts = info.get('numberOfAnalystOpinions', 0) or 0
+            rec_raw = ratings.get('ratingRecommendation') or ratings.get('rating') or ''
+            rec_norm = str(rec_raw).lower()
+            if 'strong buy' in rec_norm:
+                recommendation = 'strongBuy'
+            elif 'buy' in rec_norm:
+                recommendation = 'buy'
+            elif 'hold' in rec_norm:
+                recommendation = 'hold'
+            elif 'strong sell' in rec_norm:
+                recommendation = 'strongSell'
+            elif 'sell' in rec_norm:
+                recommendation = 'sell'
+            else:
+                recommendation = 'none'
             
             # Upside potential
             if current_price > 0 and target_price > 0:
@@ -361,8 +450,7 @@ class EnhancedSmartMoneyScreener:
             if self.spy_data is None or len(self.spy_data) < 20:
                 return {'rs_20d': 0, 'rs_60d': 0, 'rs_score': 50}
             
-            stock = yf.Ticker(ticker)
-            hist = stock.history(period="3mo")
+            hist = self._get_history(ticker, days=90)
             
             if len(hist) < 20:
                 return {'rs_20d': 0, 'rs_60d': 0, 'rs_score': 50}
@@ -400,16 +488,15 @@ class EnhancedSmartMoneyScreener:
         except Exception as e:
             return {'rs_20d': 0, 'rs_60d': 0, 'rs_score': 50}
     
-    def calculate_composite_score(self, row: pd.Series, tech: Dict, fund: Dict, analyst: Dict, rs: Dict) -> Tuple[float, str]:
+    def calculate_composite_score(self, row: Mapping[str, Any], tech: Dict, fund: Dict, analyst: Dict, rs: Dict) -> Tuple[float, str]:
         """Calculate final composite score"""
-        # Weighted composite
+        # Weighted composite score (renormalized weights)
         composite = (
-            row.get('supply_demand_score', 50) * 0.25 +
-            row.get('institutional_score', 50) * 0.20 +
-            tech.get('technical_score', 50) * 0.20 +
-            fund.get('fundamental_score', 50) * 0.15 +
-            analyst.get('analyst_score', 50) * 0.10 +
-            rs.get('rs_score', 50) * 0.10
+            row.get('supply_demand_score', 50) * 0.3125 +
+            tech.get('technical_score', 50) * 0.25 +
+            fund.get('fundamental_score', 50) * 0.1875 +
+            analyst.get('analyst_score', 50) * 0.125 +
+            rs.get('rs_score', 50) * 0.125
         )
         
         # Determine grade
@@ -422,45 +509,42 @@ class EnhancedSmartMoneyScreener:
         
         return round(composite, 1), grade
     
-    def run_screening(self, top_n: int = 50) -> pd.DataFrame:
-        """Run enhanced screening"""
-        logger.info("🔍 Running Enhanced Smart Money Screening...")
-        
-        # Merge volume and holdings data
-        merged_df = pd.merge(
-            self.volume_df,
-            self.holdings_df,
-            on='ticker',
-            how='inner',
-            suffixes=('_vol', '_inst')
-        )
-        
-        # Pre-filter: Focus on accumulation candidates
-        filtered = merged_df[merged_df['supply_demand_score'] >= 50]
-        
-        logger.info(f"📊 Pre-filtered to {len(filtered)} candidates")
-        
-        results = []
-        
-        for idx, row in tqdm(filtered.iterrows(), total=len(filtered), desc="Enhanced Screening"):
-            ticker = row['ticker']
-            
-            # Get all analyses
+    def _resolve_workers(self, workers: Optional[int]) -> int:
+        if workers is not None:
+            return max(1, min(8, int(workers)))
+        env_workers = os.getenv("SMART_MONEY_WORKERS")
+        if env_workers:
+            try:
+                return max(1, min(8, int(env_workers)))
+            except ValueError:
+                logger.warning("SMART_MONEY_WORKERS must be an integer; using single-thread")
+                return 1
+        enable_threads = str(os.getenv("PERF_ENABLE_THREADS", "0")).lower() in ("1", "true", "yes")
+        if enable_threads:
+            try:
+                return max(1, min(8, int(os.getenv("PERF_MAX_WORKERS", "4"))))
+            except ValueError:
+                return 4
+        return 1
+
+    def _analyze_row(self, row: Mapping[str, Any]) -> Optional[Dict]:
+        ticker = row.get('ticker')
+        if not ticker:
+            return None
+        try:
             tech = self.get_technical_analysis(ticker)
             fund = self.get_fundamental_analysis(ticker)
             analyst = self.get_analyst_ratings(ticker)
             rs = self.get_relative_strength(ticker)
-            
-            # Calculate composite score
+
             composite_score, grade = self.calculate_composite_score(row, tech, fund, analyst, rs)
-            
-            result = {
+
+            return {
                 'ticker': ticker,
                 'name': analyst.get('company_name', ticker),
                 'composite_score': composite_score,
                 'grade': grade,
                 'sd_score': row.get('supply_demand_score', 50),
-                'inst_score': row.get('institutional_score', 50),
                 'tech_score': tech['technical_score'],
                 'fund_score': fund['fundamental_score'],
                 'analyst_score': analyst['analyst_score'],
@@ -475,7 +559,47 @@ class EnhancedSmartMoneyScreener:
                 'recommendation': analyst['recommendation'],
                 'rs_20d': rs['rs_20d']
             }
-            results.append(result)
+        except Exception as exc:
+            logger.warning("⚠️ Failed to analyze %s: %s", ticker, exc)
+            return None
+
+    def run_screening(
+        self,
+        top_n: int = 50,
+        max_tickers: Optional[int] = None,
+        workers: Optional[int] = None,
+    ) -> pd.DataFrame:
+        """Run enhanced screening"""
+        logger.info("🔍 Running Enhanced Smart Money Screening...")
+        
+        if self.volume_df is None or self.volume_df.empty:
+            logger.warning("⚠️ Volume analysis data not loaded")
+            return pd.DataFrame()
+
+        # Pre-filter: Focus on accumulation candidates
+        filtered = self.volume_df[self.volume_df['supply_demand_score'] >= 50]
+        if max_tickers and max_tickers > 0:
+            filtered = filtered.sort_values('supply_demand_score', ascending=False).head(max_tickers)
+            logger.info("🔧 Limiting screening universe to top %d by supply/demand score", max_tickers)
+        
+        logger.info(f"📊 Pre-filtered to {len(filtered)} candidates")
+        
+        results = []
+        rows = filtered.to_dict(orient='records')
+        worker_count = self._resolve_workers(workers)
+        if worker_count > 1:
+            logger.info("⚡ Parallel screening enabled: %d workers", worker_count)
+            with ThreadPoolExecutor(max_workers=worker_count) as executor:
+                futures = [executor.submit(self._analyze_row, row) for row in rows]
+                for future in tqdm(as_completed(futures), total=len(futures), desc="Enhanced Screening"):
+                    result = future.result()
+                    if result:
+                        results.append(result)
+        else:
+            for row in tqdm(rows, total=len(rows), desc="Enhanced Screening"):
+                result = self._analyze_row(row)
+                if result:
+                    results.append(result)
         
         # Create DataFrame and sort
         results_df = pd.DataFrame(results)
@@ -484,7 +608,7 @@ class EnhancedSmartMoneyScreener:
         
         return results_df
     
-    def run(self, top_n: int = 50) -> pd.DataFrame:
+    def run(self, top_n: int = 50, max_tickers: Optional[int] = None, workers: Optional[int] = None) -> pd.DataFrame:
         """Main execution"""
         logger.info("🚀 Starting Enhanced Smart Money Screener v2.0...")
         
@@ -492,7 +616,7 @@ class EnhancedSmartMoneyScreener:
             logger.error("❌ Failed to load data")
             return pd.DataFrame()
         
-        results_df = self.run_screening(top_n)
+        results_df = self.run_screening(top_n, max_tickers=max_tickers, workers=workers)
         
         # Save results
         results_df.to_csv(self.output_file, index=False)
@@ -512,10 +636,24 @@ def main():
     parser = argparse.ArgumentParser(description='Enhanced Smart Money Screener')
     parser.add_argument('--dir', default='.', help='Data directory')
     parser.add_argument('--top', type=int, default=20, help='Top N to display')
+    parser.add_argument('--limit', type=int, default=None, help='Limit screening universe for faster runs')
+    parser.add_argument('--workers', type=int, default=None, help='Parallel workers (default: env)')
     args = parser.parse_args()
-    
+
+    max_tickers = args.limit
+    if max_tickers is None:
+        env_limit = os.getenv("SMART_MONEY_LIMIT")
+        if env_limit:
+            try:
+                max_tickers = int(env_limit)
+            except ValueError:
+                logger.warning("SMART_MONEY_LIMIT must be an integer; ignoring")
+                max_tickers = None
+    if max_tickers is not None and max_tickers <= 0:
+        max_tickers = None
+
     screener = EnhancedSmartMoneyScreener(data_dir=args.dir)
-    results = screener.run(top_n=args.top)
+    results = screener.run(top_n=args.top, max_tickers=max_tickers, workers=args.workers)
     
     if not results.empty:
         print(f"\n🔥 TOP {args.top} ENHANCED SMART MONEY PICKS")

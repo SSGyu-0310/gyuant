@@ -27,7 +27,6 @@ yfinance 의존을 제거하고, 모든 실데이터 수집 흐름을 FMP 기반
 - `portfolio_risk.py`: `historical-price-full` (6개월)
 - `macro_analyzer.py`: `quote` + `treasury-rates`
 - `smart_money_screener_v2.py`: `profile`, `key-metrics-ttm`, `ratios-ttm`, `ratings-snapshot`
-- `analyze_13f.py`: `institutional-ownership` + `insider-trading`
 - `insider_tracker.py`: `insider-trading`
 - `options_flow.py`: FMP에 옵션 체인 문서가 없으므로
   - 유지(yfinance) 또는
@@ -39,7 +38,6 @@ yfinance 의존을 제거하고, 모든 실데이터 수집 흐름을 FMP 기반
   - `BTC-USD` -> `BTCUSD`
   - `GC=F` -> `GCUSD`
   - `CL=F` -> `CLUSD`
-  - `KRW=X` -> `USDKRW` (FMP 리스트로 확인)
   - 지수는 `index-list` 기반 확인
 
 ### 4) 데이터 계약 유지
@@ -63,11 +61,10 @@ yfinance 의존을 제거하고, 모든 실데이터 수집 흐름을 FMP 기반
 - 캐시/레이트리밋 처리로 429 발생 최소화
 
 ## 유의 사항
-- KR 지수/환율 심볼이 FMP에 없을 수 있으므로 fallback을 남겨둘 것
 - 옵션 체인은 FMP 문서에 없으므로 별도 공급자 검토 필요
 
 ## 완료 기준
-- yfinance import가 코드베이스에서 제거됨
+- yfinance import는 옵션/글로벌 fallback 외 제거됨
 - 산출물 스키마 불변
 - 테스트 통과
 

@@ -161,7 +161,6 @@ This file defines the UI structure, Tailwind CSS styling, and embedded JavaScrip
                     <i class="fas fa-chevron-left"></i> Back
                 </button>
                 <div class="h-4 w-px bg-[#333] mx-2"></div>
-                <h1 id="main-header-title" class="text-lg font-bold text-white tracking-tight">🇰🇷 KR Market</h1>
             </div>
         </div>
 
@@ -203,7 +202,6 @@ This file defines the UI structure, Tailwind CSS styling, and embedded JavaScrip
 
     <!-- Tab Navigation -->
     <div class="h-10 border-b koyfin-border flex items-center px-4 gap-1 bg-[#121212] shrink-0">
-        <div class="nav-tab active" onclick="switchMarketTab(this, '🇰🇷 KR Market')">🇰🇷 KR Market</div>
         <div class="nav-tab" onclick="switchMarketTab(this, '🇺🇸 US Market')">🇺🇸 US Market</div>
         <div class="nav-tab" onclick="switchMarketTab(this, 'Economic Calendar')">Economic Calendar</div>
         <div class="nav-tab">Historical Returns</div>
@@ -213,179 +211,6 @@ This file defines the UI structure, Tailwind CSS styling, and embedded JavaScrip
 
     <!-- Main Content Area (Scrollable) -->
     <main class="flex-1 overflow-auto p-4 bg-[#121212]">
-        <!-- KR Market Content -->
-        <div id="content-kr-market">
-            <!-- Key Stats Section -->
-            <section class="mb-6">
-                <div class="flex items-center justify-between mb-2">
-                    <h2 class="text-sm font-bold text-gray-300">Market Indices</h2>
-                    <span class="text-xs text-gray-500">Real-time Data</span>
-                </div>
-                <div id="market-indices-container" class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
-                    <!-- Populated by JS -->
-                    <div
-                        class="bg-[#1a1a1a] border border-[#2a2a2a] rounded p-3 flex flex-col items-center justify-center h-20 animate-pulse">
-                        <div class="h-3 w-16 bg-[#2a2a2a] rounded mb-2"></div>
-                        <div class="h-4 w-20 bg-[#2a2a2a] rounded"></div>
-                    </div>
-                </div>
-            </section>
-
-            <!-- Grid Layout for Charts & Tables -->
-            <div class="grid grid-cols-12 gap-6">
-
-                <!-- Left Column: Holdings Chart & Table (Span 8) -->
-                <div class="col-span-12 lg:col-span-8 flex flex-col gap-6">
-
-                    <!-- Interactive Price Chart -->
-                    <div class="flex-1 min-h-[300px] border border-[#2a2a2a] rounded p-4 relative flex flex-col">
-                        <div class="flex items-center justify-between mb-2 shrink-0">
-                            <div>
-                                <h2 class="text-sm font-bold text-gray-300">Price Chart</h2>
-                                <span id="summary-chart-ticker" class="text-xs text-blue-400 font-mono ml-2"></span>
-                            </div>
-                            <!-- Time Range Buttons -->
-                            <div class="flex items-center gap-1 bg-[#1a1a1a] rounded p-0.5 border border-[#333]">
-                                <button onclick="setChartRange('1D')"
-                                    class="chart-range-btn px-2 py-0.5 text-[10px] font-medium text-gray-400 hover:text-white hover:bg-[#333] rounded transition-colors"
-                                    data-range="1D">1D</button>
-                                <button onclick="setChartRange('1W')"
-                                    class="chart-range-btn px-2 py-0.5 text-[10px] font-medium text-gray-400 hover:text-white hover:bg-[#333] rounded transition-colors"
-                                    data-range="1W">1W</button>
-                                <button onclick="setChartRange('1M')"
-                                    class="chart-range-btn px-2 py-0.5 text-[10px] font-medium text-gray-400 hover:text-white hover:bg-[#333] rounded transition-colors"
-                                    data-range="1M">1M</button>
-                                <button onclick="setChartRange('3M')"
-                                    class="chart-range-btn px-2 py-0.5 text-[10px] font-medium text-gray-400 hover:text-white hover:bg-[#333] rounded transition-colors"
-                                    data-range="3M">3M</button>
-                                <button onclick="setChartRange('6M')"
-                                    class="chart-range-btn px-2 py-0.5 text-[10px] font-medium text-gray-400 hover:text-white hover:bg-[#333] rounded transition-colors"
-                                    data-range="6M">6M</button>
-                                <button onclick="setChartRange('1Y')"
-                                    class="chart-range-btn px-2 py-0.5 text-[10px] font-medium text-white bg-[#333] rounded transition-colors"
-                                    data-range="1Y">1Y</button>
-                                <button onclick="setChartRange('5Y')"
-                                    class="chart-range-btn px-2 py-0.5 text-[10px] font-medium text-gray-400 hover:text-white hover:bg-[#333] rounded transition-colors"
-                                    data-range="5Y">5Y</button>
-                                <button onclick="setChartRange('All')"
-                                    class="chart-range-btn px-2 py-0.5 text-[10px] font-medium text-gray-400 hover:text-white hover:bg-[#333] rounded transition-colors"
-                                    data-range="All">All</button>
-                            </div>
-                        </div>
-                        <div id="summary-chart-container" class="flex-1 w-full relative"></div>
-                    </div>
-
-                    <!-- Holdings Table -->
-                    <div class="flex-1 min-h-[300px] border border-[#2a2a2a] rounded p-4 flex flex-col">
-                        <div class="flex items-center justify-between mb-4 shrink-0">
-                            <h2 class="text-lg font-semibold text-gray-100 flex items-center gap-2">
-                                AI Recommendations
-                            </h2>
-                            <div class="flex items-center gap-4">
-                                <div class="flex items-center gap-2">
-                                    <label for="history-date" class="text-gray-400 text-sm">Date:</label>
-                                    <input type="date" id="history-date"
-                                        class="bg-gray-800 text-white border border-gray-700 rounded px-3 py-1 text-sm focus:outline-none focus:border-blue-500">
-                                    <button onclick="resetDate()"
-                                        class="text-xs text-gray-500 hover:text-white underline">Reset</button>
-                                </div>
-                                <span class="text-sm text-gray-400">Update Interval: <span
-                                        class="text-blue-400 font-mono">20s</span></span>
-                            </div>
-                        </div>
-                        <div class="overflow-x-auto">
-                            <table class="w-full text-left border-collapse">
-                                <thead>
-                                    <tr class="text-xs text-gray-400 border-b border-gray-800">
-                                        <th class="py-3 text-left font-semibold text-gray-400">Ticker</th>
-                                        <th class="py-3 text-left font-semibold text-gray-400">Name</th>
-                                        <th class="py-3 text-left font-semibold text-gray-400">Rec. Price</th>
-                                        <th class="py-3 text-left font-semibold text-gray-400">Price</th>
-                                        <th class="py-3 text-left font-semibold text-gray-400">Return</th>
-                                        <th class="py-3 text-center font-semibold text-gray-400">AI Score</th>
-                                        <th class="py-3 text-center font-semibold text-gray-400">Grade</th>
-                                        <th class="py-3 text-center font-semibold text-gray-400">Wave Stage</th>
-                                        <th class="py-3 text-center font-semibold text-gray-400">S/D Stage</th>
-                                        <th class="py-3 text-center font-semibold text-gray-400">Inst. Trend</th>
-                                        <th class="py-3 text-center font-semibold text-gray-400">YTD</th>
-                                    </tr>
-                                </thead>
-                                <tbody id="holdings-table-body" class="divide-y divide-gray-700">
-                                    <!-- Rows will be populated by JS -->
-                                </tbody>
-                            </table>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Right Column: Style Box (Span 4) -->
-                <div class="col-span-12 lg:col-span-4 flex flex-col gap-6">
-
-                    <!-- Style Box Component -->
-                    <div class="h-full border border-[#2a2a2a] rounded p-4 flex flex-col">
-                        <div class="flex items-center justify-between mb-4 shrink-0">
-                            <h2 class="text-sm font-bold text-gray-300">Style Box</h2>
-                            <button class="text-xs text-gray-500 hover:text-white flex items-center gap-1"><i
-                                    class="fas fa-download"></i> DOWNLOAD</button>
-                        </div>
-
-                        <!-- Style Box Controls -->
-                        <div class="flex gap-1 mb-4 bg-[#1a1a1a] p-1 rounded w-max">
-                            <button onclick="switchTab('summary')" id="tab-summary"
-                                class="tab-btn active text-sm font-medium text-white border-b-2 border-blue-500 pb-2 px-1">Summary</button>
-                            <button onclick="switchTab('analysis')" id="tab-analysis"
-                                class="tab-btn text-sm font-medium text-gray-400 hover:text-white border-b-2 border-transparent pb-2 px-1 transition-colors">Analysis</button>
-                            <button
-                                class="tab-btn text-sm font-medium text-gray-400 hover:text-white border-b-2 border-transparent pb-2 px-1 transition-colors">Exposure</button>
-                        </div>
-
-                        <!-- The 3x3 Grid -->
-                        <div class="flex-1 flex flex-col">
-                            <!-- Column Headers -->
-                            <div class="flex text-xs text-gray-500 mb-1 text-center font-medium">
-                                <div class="w-8"></div> <!-- Row Header Spacer -->
-                                <div class="flex-1">Value</div>
-                                <div class="flex-1">Core</div>
-                                <div class="flex-1">Growth</div>
-                            </div>
-
-                            <div class="flex-1 flex gap-1">
-                                <!-- Row Headers -->
-                                <div class="w-8 flex flex-col justify-between text-xs text-gray-500 font-medium py-4">
-                                    <div class="flex-1 flex items-center justify-start">Large</div>
-                                    <div class="flex-1 flex items-center justify-start">Mid</div>
-                                    <div class="flex-1 flex items-center justify-start">Small</div>
-                                </div>
-
-                                <!-- Grid -->
-                                <div class="flex-1 flex flex-col gap-1 h-[300px]">
-                                    <!-- Large Row -->
-                                    <div class="flex-1 flex gap-1">
-                                        <div id="sb-large-value" class="flex-1 style-box-cell bg-[#9dcba3]">--%</div>
-                                        <div id="sb-large-core" class="flex-1 style-box-cell bg-[#86bf8e]">--%</div>
-                                        <div id="sb-large-growth" class="flex-1 style-box-cell bg-[#b4d7b8]">--%</div>
-                                    </div>
-                                    <!-- Mid Row -->
-                                    <div class="flex-1 flex gap-1">
-                                        <div id="sb-mid-value" class="flex-1 style-box-cell bg-[#cce4ce]">--%</div>
-                                        <div id="sb-mid-core" class="flex-1 style-box-cell bg-[#b4d7b8]">--%</div>
-                                        <div id="sb-mid-growth" class="flex-1 style-box-cell bg-[#dcecd0]">--%</div>
-                                    </div>
-                                    <!-- Small Row -->
-                                    <div class="flex-1 flex gap-1">
-                                        <div id="sb-small-value" class="flex-1 style-box-cell bg-[#dcecd0]">--%</div>
-                                        <div id="sb-small-core" class="flex-1 style-box-cell bg-[#dcecd0]">--%</div>
-                                        <div id="sb-small-growth" class="flex-1 style-box-cell bg-[#dcecd0]">--%</div>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- US Market Content -->
         <div id="content-us-market" class="hidden">
             <!-- Market Indices Section -->
             <section class="mb-6">
@@ -733,17 +558,14 @@ This file defines the UI structure, Tailwind CSS styling, and embedded JavaScrip
             tabElement.classList.add('active');
 
             // Toggle content visibility
-            const krContent = document.getElementById('content-kr-market');
             const usContent = document.getElementById('content-us-market');
             const calcContent = document.getElementById('content-economic-calendar');
 
             // Hide all first
-            krContent.classList.add('hidden');
             usContent.classList.add('hidden');
             if (calcContent) calcContent.classList.add('hidden');
 
             if (marketName.includes('KR')) {
-                krContent.classList.remove('hidden');
             } else if (marketName.includes('US')) {
                 usContent.classList.remove('hidden');
                 updateUSMarketDashboard();

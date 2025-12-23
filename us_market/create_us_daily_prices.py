@@ -2,18 +2,26 @@
 # -*- coding: utf-8 -*-
 """
 US Stock Daily Prices Collection Script
-Collects daily price data for NASDAQ and S&P 500 stocks using yfinance
+Collects daily price data for NASDAQ and S&P 500 stocks using FMP
 Similar to create_complete_daily_prices.py for Korean stocks
 """
 
 import os
+import sys
+from pathlib import Path
 import pandas as pd
 import numpy as np
-import yfinance as yf
 import logging
 from datetime import datetime, timedelta
 from typing import Dict, List
 from tqdm import tqdm
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.append(str(ROOT_DIR))
+
+from utils.fmp_client import get_fmp_client
+from utils.symbols import to_fmp_symbol
 
 # Logging Configuration
 logging.basicConfig(
@@ -24,8 +32,8 @@ logger = logging.getLogger(__name__)
 
 
 class USStockDailyPricesCreator:
-    def __init__(self):
-        self.data_dir = os.getenv('DATA_DIR', '.')
+    def __init__(self, data_dir: str = None):
+        self.data_dir = data_dir or os.getenv('DATA_DIR', '.')
         self.output_dir = self.data_dir
         os.makedirs(self.output_dir, exist_ok=True)
         
@@ -100,7 +108,7 @@ class USStockDailyPricesCreator:
         for ticker in sp500_tickers:
             stocks.append({
                 'ticker': ticker,
-                'name': ticker,  # Will be fetched from yfinance
+                'name': ticker,
                 'sector': 'N/A',
                 'industry': 'N/A',
                 'market': 'S&P500'
@@ -155,33 +163,39 @@ class USStockDailyPricesCreator:
     def download_stock_data(self, ticker: str, start_date: datetime, end_date: datetime) -> pd.DataFrame:
         """Download daily price data for a single stock"""
         try:
-            stock = yf.Ticker(ticker)
-            hist = stock.history(start=start_date, end=end_date)
-            
-            if hist.empty:
+            fmp = get_fmp_client()
+            fmp_symbol = to_fmp_symbol(ticker)
+            data = fmp.historical_price_full(
+                fmp_symbol,
+                from_date=start_date.strftime("%Y-%m-%d"),
+                to_date=end_date.strftime("%Y-%m-%d"),
+            )
+
+            hist_list = data.get("historical", []) if isinstance(data, dict) else []
+            if not hist_list:
                 return pd.DataFrame()
-            
-            hist = hist.reset_index()
-            hist['ticker'] = ticker
-            
-            # Rename columns to match Korean stock format
+
+            hist = pd.DataFrame(hist_list)
             hist = hist.rename(columns={
-                'Date': 'date',
-                'Open': 'open',
-                'High': 'high',
-                'Low': 'low',
-                'Close': 'current_price',
-                'Volume': 'volume'
+                'date': 'date',
+                'open': 'open',
+                'high': 'high',
+                'low': 'low',
+                'close': 'current_price',
+                'volume': 'volume'
             })
-            
+            hist['ticker'] = ticker
+            hist['date'] = pd.to_datetime(hist['date'])
+            hist = hist.sort_values('date')
+
             # Calculate change and change_rate
             hist['change'] = hist['current_price'].diff()
             hist['change_rate'] = hist['current_price'].pct_change() * 100
-            
-            # Select required columns
+            hist['date'] = hist['date'].dt.strftime('%Y-%m-%d')
+
             cols = ['ticker', 'date', 'open', 'high', 'low', 'current_price', 'volume', 'change', 'change_rate']
             hist = hist[cols]
-            
+
             return hist
             
         except Exception as e:
@@ -191,6 +205,8 @@ class USStockDailyPricesCreator:
     def run(self, full_refresh: bool = False) -> bool:
         """Run data collection (incremental by default)"""
         logger.info("🚀 US Stock Daily Prices Collection Started...")
+        if not get_fmp_client().api_key:
+            logger.warning("⚠️ FMP_API_KEY is not set. Price data may be empty.")
         
         try:
             # 1. Load stock list
@@ -252,7 +268,12 @@ class USStockDailyPricesCreator:
                 logger.info(f"✅ Saved {len(new_df)} new records to {self.prices_file}")
                 logger.info(f"📊 Total records: {len(final_df)}")
             else:
-                logger.info("✨ All data is up to date!")
+                if not os.path.exists(self.prices_file):
+                    cols = ['ticker', 'date', 'open', 'high', 'low', 'current_price', 'volume', 'change', 'change_rate']
+                    pd.DataFrame(columns=cols).to_csv(self.prices_file, index=False)
+                    logger.warning(f"⚠️ No data collected; created empty file at {self.prices_file}")
+                else:
+                    logger.info("✨ All data is up to date!")
             
             # 6. Summary
             logger.info(f"\n📊 Collection Summary:")
@@ -275,10 +296,11 @@ def main():
     import argparse
     
     parser = argparse.ArgumentParser(description='US Stock Daily Prices Collector')
+    parser.add_argument('--dir', default=os.getenv('DATA_DIR', '.'), help='Data directory')
     parser.add_argument('--full', action='store_true', help='Full refresh (ignore existing data)')
     args = parser.parse_args()
     
-    creator = USStockDailyPricesCreator()
+    creator = USStockDailyPricesCreator(data_dir=args.dir)
     success = creator.run(full_refresh=args.full)
     
     if success:

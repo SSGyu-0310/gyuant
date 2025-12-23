@@ -92,7 +92,6 @@ class FinalReportGenerator:
                 'size': row.get('size', 'N/A'),
                 'sub_scores': {
                     'supply_demand': row.get('sd_score', 50),
-                    'institutional': row.get('inst_score', 50),
                     'technical': row.get('tech_score', 50),
                     'fundamental': row.get('fund_score', 50),
                     'analyst': row.get('analyst_score', 50),

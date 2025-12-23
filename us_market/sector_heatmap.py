@@ -6,12 +6,20 @@ Collects sector ETF performance data for heatmap visualization
 """
 
 import os
+import sys
+from pathlib import Path
 import json
 import pandas as pd
-import yfinance as yf
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List
 import logging
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.append(str(ROOT_DIR))
+
+from utils.fmp_client import get_fmp_client
+from utils.symbols import map_symbols_to_fmp, to_fmp_symbol
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -50,9 +58,22 @@ class SectorHeatmapCollector:
             'XLRE': {'name': 'Real Estate', 'color': '#CD853F'},
             'XLC': {'name': 'Comm. Services', 'color': '#9370DB'},
         }
+
+        self.fmp = get_fmp_client()
         
         # Load sector stocks from CSV or use fallback
         self.sector_stocks = self._load_sectors_from_csv()
+
+    def _get_recent_history(self, ticker: str, days: int = 5) -> List[Dict]:
+        end_date = datetime.utcnow().date()
+        from_date = (end_date - timedelta(days=days)).isoformat()
+        data = self.fmp.historical_price_full(
+            to_fmp_symbol(ticker),
+            from_date=from_date,
+            to_date=end_date.isoformat(),
+        )
+        hist = data.get("historical", []) if isinstance(data, dict) else []
+        return sorted(hist, key=lambda x: x.get("date", ""))
     
     def _load_sectors_from_csv(self) -> Dict[str, List[str]]:
         """Load sector stocks from us_sectors.csv with fallback to hardcoded data."""
@@ -124,36 +145,39 @@ class SectorHeatmapCollector:
         tickers = list(self.sector_etfs.keys())
         
         try:
-            data = yf.download(tickers, period='5d', progress=False)
+            fmp_symbols, _ = map_symbols_to_fmp(tickers)
+            quotes = self.fmp.quote(fmp_symbols)
+            quote_map = {q.get("symbol"): q for q in quotes if isinstance(q, dict)}
             
-            if data.empty:
+            if not quote_map:
                 return {'error': 'No data available'}
             
             sectors = []
             for ticker, info in self.sector_etfs.items():
                 try:
-                    if ticker not in data['Close'].columns:
+                    fmp_symbol = to_fmp_symbol(ticker)
+                    quote = quote_map.get(fmp_symbol)
+                    if not quote:
                         continue
-                    
-                    prices = data['Close'][ticker].dropna()
-                    if len(prices) < 2:
+                    current = quote.get("price") or quote.get("previousClose")
+                    if current is None:
                         continue
-                    
-                    current = prices.iloc[-1]
-                    prev_day = prices.iloc[-2]
-                    week_ago = prices.iloc[0] if len(prices) >= 5 else prices.iloc[0]
-                    
-                    daily_change = ((current / prev_day) - 1) * 100
-                    weekly_change = ((current / week_ago) - 1) * 100
-                    
-                    # Volume
-                    volume = data['Volume'][ticker].iloc[-1] if 'Volume' in data.columns else 0
+
+                    hist = self._get_recent_history(ticker, days=7)
+                    if len(hist) < 2:
+                        continue
+                    prev_day = hist[-2].get("close") if len(hist) >= 2 else current
+                    week_ago = hist[-5].get("close") if len(hist) >= 5 else hist[0].get("close")
+                    daily_change = ((current / prev_day) - 1) * 100 if prev_day else 0
+                    weekly_change = ((current / week_ago) - 1) * 100 if week_ago else 0
+
+                    volume = quote.get("volume") or 0
                     
                     sectors.append({
                         'ticker': ticker,
                         'name': info['name'],
                         'color': info['color'],
-                        'price': round(current, 2),
+                        'price': round(float(current), 2),
                         'daily_change': round(daily_change, 2),
                         'weekly_change': round(weekly_change, 2),
                         'volume': int(volume),
@@ -194,35 +218,36 @@ class SectorHeatmapCollector:
                 ticker_to_sector[stock] = sector
                 
         try:
-            data = yf.download(all_tickers, period=period, progress=False)
+            fmp_symbols, _ = map_symbols_to_fmp(all_tickers)
+            quotes = self.fmp.quote(fmp_symbols)
+            quote_map = {q.get("symbol"): q for q in quotes if isinstance(q, dict)}
             
-            if data.empty:
+            if not quote_map:
                 return {'error': 'No data'}
             
             market_map = {name: [] for name in self.sector_stocks.keys()}
             
             for ticker in all_tickers:
                 try:
-                    if ticker not in data['Close'].columns:
+                    fmp_symbol = to_fmp_symbol(ticker)
+                    quote = quote_map.get(fmp_symbol)
+                    if not quote:
                         continue
-                    prices = data['Close'][ticker].dropna()
-                    if len(prices) < 2:
+                    current = quote.get("price")
+                    prev = quote.get("previousClose")
+                    if current is None or prev is None:
                         continue
+                    change = ((current / prev) - 1) * 100 if prev else 0
                     
-                    current = prices.iloc[-1]
-                    prev = prices.iloc[-2]
-                    change = ((current / prev) - 1) * 100
-                    
-                    # Weight by Volume * Price (Activity proxy)
-                    vol = data['Volume'][ticker].iloc[-1] if 'Volume' in data.columns else 100000
+                    vol = quote.get("volume") or 100000
                     weight = current * vol
                     
                     sector = ticker_to_sector.get(ticker, 'Unknown')
                     if sector in market_map:
                         market_map[sector].append({
                             'x': ticker,
-                            'y': round(weight, 0),
-                            'price': round(current, 2),
+                            'y': round(float(weight), 0),
+                            'price': round(float(current), 2),
                             'change': round(change, 2),
                             'color': self._get_color(change)
                         })
