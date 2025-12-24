@@ -15,6 +15,7 @@ import sys
 from pathlib import Path
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from collections import defaultdict
 import pandas as pd
 import numpy as np
 import logging
@@ -23,6 +24,10 @@ from typing import Any, Dict, List, Mapping, Optional, Tuple
 from tqdm import tqdm
 import warnings
 warnings.filterwarnings('ignore')
+from dotenv import load_dotenv
+
+# Load .env from repo root (one level up)
+load_dotenv(dotenv_path=Path(__file__).resolve().parent.parent / ".env")
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
@@ -39,6 +44,119 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+class PriceStore:
+    """One-time loader for local price data with helper accessors."""
+
+    def __init__(self, data_dir: str, lookback_days: int = 400):
+        self.data_dir = Path(data_dir)
+        self.lookback_days = lookback_days
+        self.df: Optional[pd.DataFrame] = None
+        self.loaded = False
+        self.has_spy = False
+        self._load()
+
+    def _load(self) -> None:
+        price_file = self.data_dir / "us_daily_prices.csv"
+        if not price_file.exists():
+            logger.warning("PriceStore: local price file not found: %s", price_file)
+            return
+        try:
+            usecols = [
+                "ticker",
+                "date",
+                "open",
+                "high",
+                "low",
+                "current_price",
+                "volume",
+                "name",
+            ]
+            dtype = {
+                "ticker": "category",
+                "name": "category",
+                "open": "float64",
+                "high": "float64",
+                "low": "float64",
+                "current_price": "float64",
+                "volume": "Int64",
+            }
+            df = pd.read_csv(price_file, usecols=lambda c: c in usecols, dtype={k: v for k, v in dtype.items() if k != "volume"})
+            if df.empty:
+                logger.warning("PriceStore: local price file is empty: %s", price_file)
+                return
+            if "date" not in df.columns or "ticker" not in df.columns:
+                logger.warning("PriceStore: required columns missing in %s", price_file)
+                return
+            df["date"] = pd.to_datetime(df["date"], errors="coerce")
+            df = df.dropna(subset=["date", "ticker"])
+            df["ticker"] = df["ticker"].astype("category")
+            if "name" in df.columns:
+                df["name"] = df["name"].astype("category")
+            for col in ("open", "high", "low", "current_price", "volume"):
+                if col in df.columns:
+                    try:
+                        df[col] = df[col].astype(dtype.get(col, "float64"))
+                    except Exception:
+                        df[col] = pd.to_numeric(df[col], errors="coerce")
+            # Keep only recent window to save memory
+            cutoff = pd.Timestamp(datetime.utcnow().date() - timedelta(days=self.lookback_days + 10))
+            df = df[df["date"] >= cutoff]
+            df = df.sort_values(["ticker", "date"])
+            self.has_spy = (df["ticker"] == "SPY").any()
+            self.df = df
+            self.loaded = True
+            logger.info(
+                "PriceStore: loaded %d rows (%d tickers, SPY present=%s) from %s",
+                len(df),
+                df["ticker"].nunique(),
+                self.has_spy,
+                price_file,
+            )
+        except Exception as exc:
+            logger.warning("PriceStore: failed to load %s: %s", price_file, exc)
+            self.df = None
+            self.loaded = False
+
+    def has_data(self, ticker: str) -> bool:
+        return bool(self.loaded and self.df is not None and not self.df[self.df["ticker"] == ticker].empty)
+
+    def get_history(self, ticker: str, days: int) -> pd.DataFrame:
+        if not self.has_data(ticker):
+            return pd.DataFrame()
+        df = self.df[self.df["ticker"] == ticker]
+        cutoff = pd.Timestamp(datetime.utcnow().date() - timedelta(days=days + 5))
+        df = df[df["date"] >= cutoff]
+        if df.empty:
+            return pd.DataFrame()
+        df = df.copy()
+        df = df.rename(columns={"date": "Date", "current_price": "Close", "open": "Open", "high": "High", "low": "Low", "volume": "Volume"})
+        # Ensure required columns exist
+        for col in ("Open", "High", "Low", "Volume"):
+            if col not in df.columns:
+                df[col] = np.nan
+        df = df[["Date", "Close", "Open", "High", "Low", "Volume"]]
+        df = df.sort_values("Date")
+        return df
+
+    def get_latest_price(self, ticker: str) -> Optional[float]:
+        if not self.has_data(ticker):
+            return None
+        series = self.df.loc[self.df["ticker"] == ticker, "current_price"]
+        if series.empty:
+            return None
+        val = series.iloc[-1]
+        return float(val) if pd.notna(val) else None
+
+    def get_name(self, ticker: str) -> Optional[str]:
+        if not self.has_data(ticker) or "name" not in self.df.columns:
+            return None
+        series = self.df.loc[self.df["ticker"] == ticker, "name"]
+        if series.empty:
+            return None
+        val = series.iloc[-1]
+        return str(val) if pd.notna(val) else None
+
+
 class EnhancedSmartMoneyScreener:
     """
     Enhanced screener with comprehensive analysis:
@@ -49,9 +167,13 @@ class EnhancedSmartMoneyScreener:
     5. Relative Strength
     """
     
-    def __init__(self, data_dir: str = '.'):
-        self.data_dir = data_dir
-        self.output_file = os.path.join(data_dir, 'smart_money_picks_v2.csv')
+    TA_LOOKBACK_DAYS = int(os.getenv("SMART_MONEY_TA_DAYS", "400"))
+
+    def __init__(self, data_dir: Optional[str] = None):
+        self.data_dir = data_dir or os.getenv("DATA_DIR", ".")
+        self.output_file = os.path.join(self.data_dir, 'smart_money_picks_v2.csv')
+        self.price_store = PriceStore(self.data_dir, lookback_days=self.TA_LOOKBACK_DAYS)
+        self._tech_table: Optional[pd.DataFrame] = None
         
         # Load analysis data
         self.volume_df = None
@@ -65,6 +187,7 @@ class EnhancedSmartMoneyScreener:
         self.metrics_cache = {}
         self.ratios_cache = {}
         self.history_cache = {}
+        self.api_counts = defaultdict(int)
         
         # S&P 500 benchmark data
         self.spy_data = None
@@ -88,7 +211,11 @@ class EnhancedSmartMoneyScreener:
             
             # Load SPY for relative strength
             logger.info("📈 Loading SPY benchmark data...")
-            self.spy_data = self._get_history("SPY", days=90)
+            self.spy_data = self._get_history("SPY", days=self.TA_LOOKBACK_DAYS)
+            # Pre-compute technical metrics from local prices (vectorized)
+            self._precompute_technical_table()
+            if not self.price_store.has_spy:
+                logger.warning("PriceStore: SPY not found locally; SPY history may fallback to API once.")
             
             return True
             
@@ -112,15 +239,19 @@ class EnhancedSmartMoneyScreener:
             cache[key] = value
         return value
 
+    def _count_api(self, name: str) -> None:
+        self.api_counts[name] += 1
+
     def _get_profile(self, ticker: str) -> Dict:
         return self._get_cached(
             self.profile_cache,
             ticker,
-            lambda: self._get_client().profile(to_fmp_symbol(ticker)),
+            lambda: self._count_api("profile") or self._get_client().profile(to_fmp_symbol(ticker)),
         )
 
     def _get_quote(self, ticker: str) -> Dict:
         def loader():
+            self._count_api("quote")
             quotes = self._get_client().quote([to_fmp_symbol(ticker)])
             return quotes[0] if quotes else {}
 
@@ -130,23 +261,195 @@ class EnhancedSmartMoneyScreener:
         return self._get_cached(
             self.metrics_cache,
             ticker,
-            lambda: self._get_client().key_metrics_ttm(to_fmp_symbol(ticker)),
+            lambda: self._count_api("key_metrics") or self._get_client().key_metrics_ttm(to_fmp_symbol(ticker)),
         )
 
     def _get_ratios(self, ticker: str) -> Dict:
         return self._get_cached(
             self.ratios_cache,
             ticker,
-            lambda: self._get_client().ratios_ttm(to_fmp_symbol(ticker)),
+            lambda: self._count_api("ratios") or self._get_client().ratios_ttm(to_fmp_symbol(ticker)),
         )
+
+    def _get_local_meta(self, ticker: str) -> Dict[str, Any]:
+        """Return lightweight local metadata: latest close and name if available."""
+        name = self.price_store.get_name(ticker)
+        if name is None and self.volume_df is not None and not self.volume_df.empty and "name" in self.volume_df.columns:
+            name_series = self.volume_df.loc[self.volume_df["ticker"] == ticker, "name"]
+            if not name_series.empty:
+                name = name_series.iloc[0]
+        price = self.price_store.get_latest_price(ticker)
+        if price is None and self._tech_table is not None and ticker in self._tech_table.index:
+            val = self._tech_table.loc[ticker].get("last_close")
+            if val is not None and not pd.isna(val):
+                price = float(val)
+        return {"name": name, "price": price}
+
+    def _ensure_local_prices(self) -> Optional[pd.DataFrame]:
+        return self.price_store.df
+
+    def _get_local_history(self, ticker: str, days: int) -> pd.DataFrame:
+        return self.price_store.get_history(ticker, days)
+
+    def _precompute_technical_table(self) -> None:
+        """
+        Vectorized technical computation for all tickers using local prices.
+        Falls back silently if local data is missing.
+        """
+        df = self._ensure_local_prices()
+        if df is None or df.empty:
+            return
+        price_col = None
+        for cand in ("Close", "close", "current_price"):
+            if cand in df.columns:
+                price_col = cand
+                break
+        if price_col is None or "ticker" not in df.columns or "date" not in df.columns:
+            return
+
+        df = df.rename(columns={price_col: "Close", "date": "Date"})
+        df = df[["ticker", "Date", "Close"]].dropna()
+        if df.empty:
+            return
+        df["Date"] = pd.to_datetime(df["Date"])
+        df = df.sort_values(["ticker", "Date"])
+
+        records: List[Dict[str, Any]] = []
+
+        def calc_metrics(group: pd.DataFrame) -> Optional[Dict[str, Any]]:
+            close = group["Close"]
+            if close.empty:
+                return None
+            # RSI
+            delta = close.diff()
+            gain = delta.where(delta > 0, 0).rolling(window=14).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+            rs = gain / loss
+            rsi_series = 100 - (100 / (1 + rs))
+
+            # MACD
+            ema12 = close.ewm(span=12, adjust=False).mean()
+            ema26 = close.ewm(span=26, adjust=False).mean()
+            macd = ema12 - ema26
+            signal = macd.ewm(span=9, adjust=False).mean()
+            macd_hist = macd - signal
+
+            ma20 = close.rolling(20, min_periods=20).mean()
+            ma50 = close.rolling(50, min_periods=50).mean()
+            ma200 = close.rolling(200, min_periods=200).mean()
+
+            ret_20 = np.nan
+            ret_60 = np.nan
+            if len(close) >= 21:
+                ret_20 = ((close.iloc[-1] / close.iloc[-21]) - 1) * 100
+            if len(close) >= 61:
+                ret_60 = ((close.iloc[-1] / close.iloc[-61]) - 1) * 100
+
+            if len(close) < 50:
+                tech_score = 50
+                ma_signal = "Neutral"
+                cross_signal = "None"
+            else:
+                current_price = close.iloc[-1]
+                m20 = ma20.iloc[-1]
+                m50 = ma50.iloc[-1]
+                m200 = ma200.iloc[-1] if len(close) >= 200 else np.nan
+                ma_signal = "Neutral"
+                if pd.notna(m20) and pd.notna(m50):
+                    if current_price > m20 > m50:
+                        ma_signal = "Bullish"
+                    elif current_price < m20 < m50:
+                        ma_signal = "Bearish"
+                ma50_prev = ma50.iloc[-5] if len(ma50) >= 5 else np.nan
+                ma200_prev = ma200.iloc[-5] if len(ma200) >= 5 else np.nan
+                if (
+                    pd.notna(m50) and pd.notna(m200) and pd.notna(ma50_prev) and pd.notna(ma200_prev)
+                    and m50 > m200 and ma50_prev <= ma200_prev
+                ):
+                    cross_signal = "Golden Cross"
+                elif (
+                    pd.notna(m50) and pd.notna(m200) and pd.notna(ma50_prev) and pd.notna(ma200_prev)
+                    and m50 < m200 and ma50_prev >= ma200_prev
+                ):
+                    cross_signal = "Death Cross"
+                else:
+                    cross_signal = "None"
+
+                rsi_val = rsi_series.iloc[-1] if not rsi_series.empty else 50
+                macd_hist_current = macd_hist.iloc[-1]
+                tech_score = 50
+                if 40 <= rsi_val <= 60:
+                    tech_score += 10
+                elif rsi_val < 30:
+                    tech_score += 15
+                elif rsi_val > 70:
+                    tech_score -= 5
+                if macd_hist_current > 0 and len(macd_hist) > 1 and macd_hist.iloc[-2] < 0:
+                    tech_score += 15
+                elif macd_hist_current > 0:
+                    tech_score += 8
+                elif macd_hist_current < 0:
+                    tech_score -= 5
+                if ma_signal == "Bullish":
+                    tech_score += 15
+                elif ma_signal == "Bearish":
+                    tech_score -= 10
+                if cross_signal == "Golden Cross":
+                    tech_score += 10
+                elif cross_signal == "Death Cross":
+                    tech_score -= 15
+                tech_score = max(0, min(100, tech_score))
+
+            return {
+                "ticker": group["ticker"].iloc[0],
+                "rsi": float(rsi_series.iloc[-1]) if not rsi_series.empty else np.nan,
+                "macd": float(macd.iloc[-1]),
+                "macd_signal": float(signal.iloc[-1]),
+                "macd_histogram": float(macd_hist.iloc[-1]),
+                "ma20": float(ma20.iloc[-1]) if not ma20.empty else np.nan,
+                "ma50": float(ma50.iloc[-1]) if not ma50.empty else np.nan,
+                "ma200": float(ma200.iloc[-1]) if not ma200.empty else np.nan,
+                "ma_signal": ma_signal,
+                "cross_signal": cross_signal,
+                "technical_score": tech_score,
+                "ret_20d": ret_20,
+                "ret_60d": ret_60,
+                "last_close": float(close.iloc[-1]),
+            }
+
+        for _, group in df.groupby("ticker"):
+            metrics = calc_metrics(group)
+            if metrics:
+                records.append(metrics)
+
+        if not records:
+            return
+
+        tech_df = pd.DataFrame(records)
+        spy_row = tech_df[tech_df["ticker"] == "SPY"]
+        if not spy_row.empty:
+            spy20 = float(spy_row["ret_20d"].iloc[0]) if not spy_row["ret_20d"].isna().all() else np.nan
+            spy60 = float(spy_row["ret_60d"].iloc[0]) if not spy_row["ret_60d"].isna().all() else np.nan
+            tech_df["rs_20d"] = tech_df["ret_20d"] - spy20 if not np.isnan(spy20) else np.nan
+            tech_df["rs_60d"] = tech_df["ret_60d"] - spy60 if not np.isnan(spy60) else np.nan
+        else:
+            tech_df["rs_20d"] = np.nan
+            tech_df["rs_60d"] = np.nan
+
+        self._tech_table = tech_df.set_index("ticker")
 
     def _get_history(self, ticker: str, days: int = 180) -> pd.DataFrame:
         cache_key = (ticker, days)
 
         def loader():
+            local_df = self._get_local_history(ticker, days)
+            if not local_df.empty:
+                self._count_api("history_local")
+                return local_df
             end_date = datetime.utcnow().date()
             from_date = (end_date - timedelta(days=days)).isoformat()
             to_date = end_date.isoformat()
+            self._count_api("history")
             data = self._get_client().historical_price_full(
                 to_fmp_symbol(ticker),
                 from_date=from_date,
@@ -166,7 +469,21 @@ class EnhancedSmartMoneyScreener:
     def get_technical_analysis(self, ticker: str) -> Dict:
         """Calculate technical indicators"""
         try:
-            hist = self._get_history(ticker, days=180)
+            if self._tech_table is not None and ticker in self._tech_table.index:
+                row = self._tech_table.loc[ticker]
+                return {
+                    'rsi': float(row.get("rsi", 50)) if not pd.isna(row.get("rsi", np.nan)) else 50,
+                    'macd': float(row.get("macd", 0)),
+                    'macd_signal': float(row.get("macd_signal", 0)),
+                    'macd_histogram': float(row.get("macd_histogram", 0)),
+                    'ma20': float(row.get("ma20", 0)) if not pd.isna(row.get("ma20", np.nan)) else 0,
+                    'ma50': float(row.get("ma50", 0)) if not pd.isna(row.get("ma50", np.nan)) else 0,
+                    'ma_signal': row.get("ma_signal", "Neutral"),
+                    'cross_signal': row.get("cross_signal", "None"),
+                    'technical_score': float(row.get("technical_score", 50)),
+                }
+
+            hist = self._get_history(ticker, days=self.TA_LOOKBACK_DAYS)
             
             if len(hist) < 50:
                 return self._default_technical()
@@ -193,26 +510,28 @@ class EnhancedSmartMoneyScreener:
             macd_hist_current = macd_histogram.iloc[-1]
             
             # Moving Averages
-            ma20 = close.rolling(20).mean().iloc[-1]
-            ma50 = close.rolling(50).mean().iloc[-1]
-            ma200 = close.rolling(200).mean().iloc[-1] if len(close) >= 200 else ma50
+            ma20 = close.rolling(20, min_periods=20).mean().iloc[-1]
+            ma50_series = close.rolling(50, min_periods=50).mean()
+            ma50 = ma50_series.iloc[-1]
+            ma200_series = close.rolling(200, min_periods=200).mean()
+            ma200 = ma200_series.iloc[-1]
             current_price = close.iloc[-1]
             
             # MA Arrangement
-            if current_price > ma20 > ma50:
+            if pd.notna(ma20) and pd.notna(ma50) and current_price > ma20 > ma50:
                 ma_signal = "Bullish"
-            elif current_price < ma20 < ma50:
+            elif pd.notna(ma20) and pd.notna(ma50) and current_price < ma20 < ma50:
                 ma_signal = "Bearish"
             else:
                 ma_signal = "Neutral"
             
             # Golden/Death Cross
-            ma50_prev = close.rolling(50).mean().iloc[-5]
-            ma200_prev = close.rolling(200).mean().iloc[-5] if len(close) >= 200 else ma50_prev
+            ma50_prev = ma50_series.iloc[-5] if len(ma50_series) >= 5 else np.nan
+            ma200_prev = ma200_series.iloc[-5] if len(ma200_series) >= 5 else np.nan
             
-            if ma50 > ma200 and ma50_prev <= ma200_prev:
+            if pd.notna(ma50) and pd.notna(ma200) and pd.notna(ma50_prev) and pd.notna(ma200_prev) and ma50 > ma200 and ma50_prev <= ma200_prev:
                 cross_signal = "Golden Cross"
-            elif ma50 < ma200 and ma50_prev >= ma200_prev:
+            elif pd.notna(ma50) and pd.notna(ma200) and pd.notna(ma50_prev) and pd.notna(ma200_prev) and ma50 < ma200 and ma50_prev >= ma200_prev:
                 cross_signal = "Death Cross"
             else:
                 cross_signal = "None"
@@ -277,11 +596,19 @@ class EnhancedSmartMoneyScreener:
             profile = self._get_profile(ticker)
             metrics = self._get_key_metrics(ticker)
             ratios = self._get_ratios(ticker)
+            # Keep internal representation numeric (np.nan instead of 'N/A')
+            def _num(val: Any) -> float:
+                try:
+                    if val is None or (isinstance(val, (float, int)) and np.isnan(val)):
+                        return np.nan
+                    return float(val)
+                except Exception:
+                    return np.nan
             
             # Valuation
-            pe_ratio = metrics.get('peRatioTTM') or ratios.get('priceEarningsRatioTTM') or 0
-            forward_pe = profile.get('pe') or ratios.get('priceEarningsRatioTTM') or 0
-            pb_ratio = ratios.get('priceToBookRatioTTM') or metrics.get('pbRatioTTM') or 0
+            pe_ratio_raw = metrics.get('peRatioTTM') or ratios.get('priceEarningsRatioTTM')
+            forward_pe_raw = profile.get('pe') or ratios.get('priceEarningsRatioTTM')
+            pb_ratio_raw = ratios.get('priceToBookRatioTTM') or metrics.get('pbRatioTTM')
             
             # Growth (fallback to 0 if not available)
             revenue_growth = profile.get('revenueGrowth') or 0
@@ -292,15 +619,18 @@ class EnhancedSmartMoneyScreener:
             roe = metrics.get('roeTTM') or ratios.get('returnOnEquityTTM') or 0
             
             # Market Cap
-            market_cap = profile.get('mktCap') or profile.get('marketCap') or 0
+            market_cap = profile.get('mktCap') or profile.get('marketCap')
             
             # Dividend
-            dividend_yield = ratios.get('dividendYieldTTM') or 0
+            dividend_yield = ratios.get('dividendYieldTTM')
             
             # Fundamental Score (0-100)
             fund_score = 50
             
             # P/E contribution (lower is better, but not too low)
+            pe_ratio = _num(pe_ratio_raw)
+            forward_pe = _num(forward_pe_raw)
+            pb_ratio = _num(pb_ratio_raw)
             if 0 < pe_ratio < 15:
                 fund_score += 15
             elif 15 <= pe_ratio < 25:
@@ -343,16 +673,16 @@ class EnhancedSmartMoneyScreener:
                 size = "Micro Cap"
             
             return {
-                'pe_ratio': round(pe_ratio, 2) if pe_ratio else 'N/A',
-                'forward_pe': round(forward_pe, 2) if forward_pe else 'N/A',
-                'pb_ratio': round(pb_ratio, 2) if pb_ratio else 'N/A',
+                'pe_ratio': round(pe_ratio, 2) if not np.isnan(pe_ratio) else np.nan,
+                'forward_pe': round(forward_pe, 2) if not np.isnan(forward_pe) else np.nan,
+                'pb_ratio': round(pb_ratio, 2) if not np.isnan(pb_ratio) else np.nan,
                 'revenue_growth': round(revenue_growth * 100, 1) if revenue_growth else 0,
                 'earnings_growth': round(earnings_growth * 100, 1) if earnings_growth else 0,
                 'profit_margin': round(profit_margin * 100, 1) if profit_margin else 0,
                 'roe': round(roe * 100, 1) if roe else 0,
-                'market_cap_b': round(market_cap / 1e9, 1),
+                'market_cap_b': round(market_cap / 1e9, 1) if market_cap else np.nan,
                 'size': size,
-                'dividend_yield': round(dividend_yield * 100, 2) if dividend_yield else 0,
+                'dividend_yield': round(dividend_yield * 100, 2) if dividend_yield else np.nan,
                 'fundamental_score': fund_score
             }
             
@@ -361,24 +691,40 @@ class EnhancedSmartMoneyScreener:
     
     def _default_fundamental(self) -> Dict:
         return {
-            'pe_ratio': 'N/A', 'forward_pe': 'N/A', 'pb_ratio': 'N/A',
+            'pe_ratio': np.nan, 'forward_pe': np.nan, 'pb_ratio': np.nan,
             'revenue_growth': 0, 'earnings_growth': 0, 'profit_margin': 0,
-            'roe': 0, 'market_cap_b': 0, 'size': 'Unknown', 'dividend_yield': 0,
+            'roe': 0, 'market_cap_b': np.nan, 'size': 'Unknown', 'dividend_yield': np.nan,
             'fundamental_score': 50
         }
     
     def get_analyst_ratings(self, ticker: str) -> Dict:
         """Get analyst consensus and target price"""
         try:
-            profile = self._get_profile(ticker)
-            quote = self._get_quote(ticker)
+            local_meta = self._get_local_meta(ticker)
+            profile = None
+            quote = None
             client = self._get_client()
+            self._count_api("ratings_snapshot")
             ratings = client.ratings_snapshot(to_fmp_symbol(ticker))
+            self._count_api("price_target_consensus")
             consensus = client.price_target_consensus(to_fmp_symbol(ticker))
             
-            company_name = profile.get('companyName') or profile.get('name') or ticker
-            
-            current_price = quote.get('price') or profile.get('price') or 0
+            # Prefer local name/price; fallback to profile/quote only if missing
+            company_name = local_meta.get("name")
+            current_price = local_meta.get("price")
+            if company_name is None or current_price is None:
+                profile = self._get_profile(ticker)
+                quote = self._get_quote(ticker)
+            company_name = company_name or (profile.get('companyName') if profile else None) or (profile.get('name') if profile else None) or ticker
+            current_price = (
+                current_price
+                or (quote.get('price') if quote else None)
+                or (profile.get('price') if profile else None)
+                or 0
+            )
+            if not current_price or pd.isna(current_price):
+                logger.warning("Current price missing for %s; skipping upside calc fallback to 0", ticker)
+                current_price = 0
             target_price = (
                 consensus.get('targetConsensus')
                 or consensus.get('targetMedian')
@@ -447,37 +793,33 @@ class EnhancedSmartMoneyScreener:
     def get_relative_strength(self, ticker: str) -> Dict:
         """Calculate relative strength vs S&P 500"""
         try:
-            if self.spy_data is None or len(self.spy_data) < 20:
+            if self._tech_table is not None and ticker in self._tech_table.index:
+                row = self._tech_table.loc[ticker]
+                spy_row = self._tech_table.loc["SPY"] if "SPY" in self._tech_table.index else None
+                rs_20d = float(row.get("rs_20d", 0)) if not pd.isna(row.get("rs_20d", np.nan)) else 0
+                rs_60d = float(row.get("rs_60d", 0)) if not pd.isna(row.get("rs_60d", np.nan)) else 0
+                rs_score = 50 if spy_row is None else self._compute_rs_score(rs_20d, rs_60d)
+                return {'rs_20d': round(rs_20d, 1), 'rs_60d': round(rs_60d, 1), 'rs_score': rs_score}
+
+            if self.spy_data is None or len(self.spy_data) < 61:
                 return {'rs_20d': 0, 'rs_60d': 0, 'rs_score': 50}
             
-            hist = self._get_history(ticker, days=90)
+            hist = self._get_history(ticker, days=140)
             
-            if len(hist) < 20:
+            if len(hist) < 61:
                 return {'rs_20d': 0, 'rs_60d': 0, 'rs_score': 50}
             
-            # Calculate returns
+            # Calculate returns using trading-day indices
             stock_return_20d = (hist['Close'].iloc[-1] / hist['Close'].iloc[-21] - 1) * 100 if len(hist) >= 21 else 0
-            stock_return_60d = (hist['Close'].iloc[-1] / hist['Close'].iloc[0] - 1) * 100
+            stock_return_60d = (hist['Close'].iloc[-1] / hist['Close'].iloc[-61] - 1) * 100
             
             spy_return_20d = (self.spy_data['Close'].iloc[-1] / self.spy_data['Close'].iloc[-21] - 1) * 100 if len(self.spy_data) >= 21 else 0
-            spy_return_60d = (self.spy_data['Close'].iloc[-1] / self.spy_data['Close'].iloc[0] - 1) * 100
+            spy_return_60d = (self.spy_data['Close'].iloc[-1] / self.spy_data['Close'].iloc[-61] - 1) * 100
             
             rs_20d = stock_return_20d - spy_return_20d
             rs_60d = stock_return_60d - spy_return_60d
             
-            # RS Score (0-100)
-            rs_score = 50
-            if rs_20d > 10: rs_score += 25
-            elif rs_20d > 5: rs_score += 15
-            elif rs_20d > 0: rs_score += 8
-            elif rs_20d < -10: rs_score -= 20
-            elif rs_20d < -5: rs_score -= 10
-            
-            if rs_60d > 15: rs_score += 15
-            elif rs_60d > 5: rs_score += 8
-            elif rs_60d < -15: rs_score -= 15
-            
-            rs_score = max(0, min(100, rs_score))
+            rs_score = self._compute_rs_score(rs_20d, rs_60d)
             
             return {
                 'rs_20d': round(rs_20d, 1),
@@ -487,6 +829,32 @@ class EnhancedSmartMoneyScreener:
             
         except Exception as e:
             return {'rs_20d': 0, 'rs_60d': 0, 'rs_score': 50}
+
+    def _compute_rs_score(self, rs_20d: float, rs_60d: float) -> int:
+        """Shared RS scoring logic."""
+        rs_score = 50
+        if rs_20d > 10: rs_score += 25
+        elif rs_20d > 5: rs_score += 15
+        elif rs_20d > 0: rs_score += 8
+        elif rs_20d < -10: rs_score -= 20
+        elif rs_20d < -5: rs_score -= 10
+
+        if rs_60d > 15: rs_score += 15
+        elif rs_60d > 5: rs_score += 8
+        elif rs_60d < -15: rs_score -= 15
+
+        return int(max(0, min(100, rs_score)))
+
+    def _log_api_stats(self, total_candidates: int) -> None:
+        """Log API usage summary."""
+        if total_candidates <= 0:
+            total_candidates = 1
+        if not self.api_counts:
+            return
+        stats = {k: v for k, v in self.api_counts.items()}
+        avg_per_ticker = {k: round(v / total_candidates, 3) for k, v in stats.items()}
+        logger.info("API usage counts: %s", stats)
+        logger.info("API usage avg per analyzed ticker: %s", avg_per_ticker)
     
     def calculate_composite_score(self, row: Mapping[str, Any], tech: Dict, fund: Dict, analyst: Dict, rs: Dict) -> Tuple[float, str]:
         """Calculate final composite score"""
@@ -511,21 +879,22 @@ class EnhancedSmartMoneyScreener:
     
     def _resolve_workers(self, workers: Optional[int]) -> int:
         if workers is not None:
-            return max(1, min(8, int(workers)))
+            return max(1, min(12, int(workers)))
         env_workers = os.getenv("SMART_MONEY_WORKERS")
         if env_workers:
             try:
-                return max(1, min(8, int(env_workers)))
+                return max(1, min(12, int(env_workers)))
             except ValueError:
                 logger.warning("SMART_MONEY_WORKERS must be an integer; using single-thread")
                 return 1
         enable_threads = str(os.getenv("PERF_ENABLE_THREADS", "0")).lower() in ("1", "true", "yes")
         if enable_threads:
             try:
-                return max(1, min(8, int(os.getenv("PERF_MAX_WORKERS", "4"))))
+                return max(1, min(12, int(os.getenv("PERF_MAX_WORKERS", "6"))))
             except ValueError:
-                return 4
-        return 1
+                return 6
+        # Default safe parallelism for I/O-bound API
+        return 6
 
     def _analyze_row(self, row: Mapping[str, Any]) -> Optional[Dict]:
         ticker = row.get('ticker')
@@ -563,6 +932,52 @@ class EnhancedSmartMoneyScreener:
             logger.warning("⚠️ Failed to analyze %s: %s", ticker, exc)
             return None
 
+    def _apply_stage2_preselection(self, rows: List[Mapping[str, Any]]) -> List[Mapping[str, Any]]:
+        """
+        Two-step screening:
+        1) Rank by local-only signals (supply/demand + technical + RS).
+        2) Run expensive API-based analysis only for top-K tickers.
+        """
+        if self._tech_table is None or self._tech_table.empty or not rows:
+            return rows
+
+        try:
+            limit = int(os.getenv("SMART_MONEY_STAGE2_LIMIT", "180"))
+        except ValueError:
+            limit = 180
+
+        if limit <= 0 or len(rows) <= limit:
+            return rows
+
+        try:
+            w_sd = float(os.getenv("SMART_MONEY_STAGE2_W_SD", "0.4"))
+            w_tech = float(os.getenv("SMART_MONEY_STAGE2_W_TECH", "0.4"))
+            w_rs = float(os.getenv("SMART_MONEY_STAGE2_W_RS", "0.2"))
+        except ValueError:
+            w_sd, w_tech, w_rs = 0.4, 0.4, 0.2
+
+        ranked: List[Tuple[float, Mapping[str, Any]]] = []
+        for row in rows:
+            ticker = row.get("ticker")
+            sd = row.get("supply_demand_score", 50) or 0
+            tech_score = 50.0
+            rs_score = 50.0
+            if ticker in self._tech_table.index:
+                trow = self._tech_table.loc[ticker]
+                tech_val = trow.get("technical_score", np.nan)
+                tech_score = float(tech_val) if not pd.isna(tech_val) else 50.0
+                rs20 = trow.get("rs_20d", np.nan)
+                rs60 = trow.get("rs_60d", np.nan)
+                if not pd.isna(rs20) and not pd.isna(rs60):
+                    rs_score = float(self._compute_rs_score(float(rs20), float(rs60)))
+            pre_score = sd * w_sd + tech_score * w_tech + rs_score * w_rs
+            ranked.append((pre_score, row))
+
+        ranked.sort(key=lambda x: x[0], reverse=True)
+        selected = [row for _, row in ranked[:limit]]
+        logger.info("Two-step screening enabled: %d -> %d tickers for API phase", len(rows), len(selected))
+        return selected
+
     def run_screening(
         self,
         top_n: int = 50,
@@ -586,6 +1001,7 @@ class EnhancedSmartMoneyScreener:
         
         results = []
         rows = filtered.to_dict(orient='records')
+        rows = self._apply_stage2_preselection(rows)
         worker_count = self._resolve_workers(workers)
         if worker_count > 1:
             logger.info("⚡ Parallel screening enabled: %d workers", worker_count)
@@ -617,6 +1033,7 @@ class EnhancedSmartMoneyScreener:
             return pd.DataFrame()
         
         results_df = self.run_screening(top_n, max_tickers=max_tickers, workers=workers)
+        self._log_api_stats(total_candidates=len(results_df))
         
         # Save results
         results_df.to_csv(self.output_file, index=False)
@@ -634,7 +1051,7 @@ class EnhancedSmartMoneyScreener:
 def main():
     import argparse
     parser = argparse.ArgumentParser(description='Enhanced Smart Money Screener')
-    parser.add_argument('--dir', default='.', help='Data directory')
+    parser.add_argument('--dir', default=os.getenv("DATA_DIR", "."), help='Data directory')
     parser.add_argument('--top', type=int, default=20, help='Top N to display')
     parser.add_argument('--limit', type=int, default=None, help='Limit screening universe for faster runs')
     parser.add_argument('--workers', type=int, default=None, help='Parallel workers (default: env)')

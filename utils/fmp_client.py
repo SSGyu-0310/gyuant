@@ -1,6 +1,7 @@
 import logging
 import os
 import time
+import random
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -30,13 +31,16 @@ class FMPClient:
         timeout: float = 15.0,
         max_retries: int = 2,
         backoff_base: float = 0.5,
+        backoff_max: float = 8.0,
     ) -> None:
         self.api_key = api_key or os.getenv("FMP_API_KEY", "")
         self.base_url = (base_url or os.getenv("FMP_BASE_URL", DEFAULT_FMP_BASE_URL)).rstrip("/")
         self.timeout = timeout
-        self.max_retries = max_retries
-        self.backoff_base = backoff_base
+        self.max_retries = int(os.getenv("FMP_MAX_RETRIES", max_retries))
+        self.backoff_base = float(os.getenv("FMP_BACKOFF_BASE", backoff_base))
+        self.backoff_max = float(os.getenv("FMP_BACKOFF_MAX", 12.0))
         self.session = requests.Session()
+        self._adaptive_delay = 0.0
 
     def _build_url(self, path: str) -> str:
         if not path.startswith("/"):
@@ -53,20 +57,32 @@ class FMPClient:
 
         last_exc: Optional[Exception] = None
         for attempt in range(self.max_retries + 1):
+            # Apply adaptive delay before request if we have recently been throttled.
+            if self._adaptive_delay > 0:
+                time.sleep(self._adaptive_delay)
             start = time.perf_counter()
             try:
                 resp = self.session.get(url, params=payload, timeout=self.timeout)
                 latency_ms = round((time.perf_counter() - start) * 1000, 2)
                 logger.debug("FMP GET %s status=%s latency_ms=%s", path, resp.status_code, latency_ms)
                 if resp.status_code in (429, 500, 502, 503, 504) and attempt < self.max_retries:
-                    time.sleep(self.backoff_base * (2 ** attempt))
+                    # exponential backoff with jitter on throttle/server errors
+                    delay = min(self.backoff_max, self.backoff_base * (2 ** attempt) + self._adaptive_delay)
+                    delay += random.uniform(0, 0.25)
+                    self._adaptive_delay = min(self.backoff_max, max(self._adaptive_delay * 1.5, delay))
+                    time.sleep(delay)
                     continue
                 resp.raise_for_status()
+                # success: gradually reduce adaptive delay
+                self._adaptive_delay = max(0.0, self._adaptive_delay * 0.5)
                 return resp.json()
             except requests.RequestException as exc:
                 last_exc = exc
                 if attempt < self.max_retries:
-                    time.sleep(self.backoff_base * (2 ** attempt))
+                    delay = min(self.backoff_max, self.backoff_base * (2 ** attempt) + self._adaptive_delay)
+                    delay += random.uniform(0, 0.25)
+                    self._adaptive_delay = min(self.backoff_max, max(self._adaptive_delay * 1.5, delay))
+                    time.sleep(delay)
                     continue
                 logger.warning("FMP request failed: %s", exc)
                 return None
