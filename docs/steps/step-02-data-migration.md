@@ -1,72 +1,85 @@
-# Step 2: Data Migration (yfinance -> FMP 전체 전환)
+# Step 2: Storage Migration (CSV/JSON -> SQLite 단일 소스)
 
 ## 목표
-yfinance 의존을 제거하고, 모든 실데이터 수집 흐름을 FMP 기반으로 통일한다. 기존 CSV/JSON 산출물의 스키마는 유지한다.
+모든 운영 데이터(가격/분석/스냅샷)를 CSV/JSON이 아닌 SQLite에 저장하고, DB를 단일 소스로 사용한다.
 
 ## 범위
-- 포함: `flask_app.py` + `us_market/` 파이프라인의 yfinance 호출 전부 교체.
-- 제외: 백테스트 데이터 구조 설계(이는 Step 3).
+- 포함: DB 스키마 설계, 기존 산출물 마이그레이션, 파이프라인/Flask API 읽기-쓰기 전환.
+- 제외: 백테스트 엔진 로직 구현(이는 Step 4), 알파 확장(이는 Step 5).
 
-## 작업 지침 (에이전트용)
-### 1) Flask API 실시간/단기 데이터 교체
-- `flask_app.py:get_sector` -> FMP `profile`
-- `flask_app.py:fetch_price_map` -> FMP `quote` 또는 `batch-quote`
-- `flask_app.py:get_us_stock_chart` -> FMP `historical-price-full`
-- `flask_app.py:get_technical_indicators` -> FMP `historical-price-full`
-- `flask_app.py:get_realtime_prices` -> FMP `historical-chart/1min` 또는 `quote`
-- `flask_app.py:get_us_macro_analysis` -> FMP `quote` + `treasury-rates`
+## 결정사항
+- SQLite DB 파일: `DATA_DIR/gyuant.db`
+- 단일 소스 원칙: CSV/JSON은 더 이상 소스로 사용하지 않으며 필요 시 “export” 용도로만 사용.
+- 시간 규칙: 모든 날짜는 `YYYY-MM-DD`, 타임스탬프는 ISO 8601(UTC 권장).
+- 동시성: `WAL` 모드 + `busy_timeout` 사용.
 
-요구사항:
-- 기존 응답 JSON 스키마 유지
-- 오류 시 빈 데이터/에러 구조 유지
+## 관련 문서
+- `docs/db/schema.sql`: 전체 스키마 DDL (단일 소스)
+- `docs/db/erd.md`: 테이블 관계 요약
+- `docs/db/query-patterns.md`: 쿼리 패턴 + 인덱스 가이드
+- `docs/db/migration-checklist.md`: CSV/JSON -> SQLite 전환 체크리스트
 
-### 2) 파이프라인 스크립트 교체 (`us_market/`)
-- `create_us_daily_prices.py`: `historical-price-full/{symbol}` 사용
-- `sector_heatmap.py`: `batch-quote` + 최근 2~5일 `historical-price-full`
-- `analyze_etf_flows.py`: `historical-price-full` (90일)
-- `portfolio_risk.py`: `historical-price-full` (6개월)
-- `macro_analyzer.py`: `quote` + `treasury-rates`
-- `smart_money_screener_v2.py`: `profile`, `key-metrics-ttm`, `ratios-ttm`, `ratings-snapshot`
-- `insider_tracker.py`: `insider-trading`
-- `options_flow.py`: FMP에 옵션 체인 문서가 없으므로
-  - 유지(yfinance) 또는
-  - 대체 제공자 사용
+## 테이블 매핑 (운영 데이터)
+| 기존 파일 | 새 테이블 | 비고 |
+| --- | --- | --- |
+| `us_daily_prices.csv` | `market_prices_daily` | `current_price` -> `close`로 매핑 |
+| `us_stocks_list.csv` | `market_stocks` | 티커 메타(섹터/시장) |
+| `us_volume_analysis.csv` | `market_volume_analysis` | 수급 지표/점수 |
+| `us_etf_flows.csv` | `market_etf_flows` | ETF 플로우 데이터 |
+| `smart_money_picks_v2.csv` | `market_smart_money_picks` | 분석일 기준 Top N |
+| `smart_money_current.json` | `market_smart_money_runs` + `market_smart_money_picks` | 요약/스냅샷 정보 |
+| `history/picks_YYYYMMDD.json` | `market_smart_money_runs` + `market_smart_money_picks` | 과거 스냅샷 |
+| `macro_analysis*.json` | `market_documents` | `doc_type=macro_analysis`, `lang`, `model` 포함 |
+| `sector_heatmap.json` | `market_documents` | `doc_type=sector_heatmap` |
+| `options_flow.json` | `market_documents` | `doc_type=options_flow` |
+| `insider_moves.json` | `market_documents` | `doc_type=insider_moves` |
+| `portfolio_risk.json` | `market_documents` | `doc_type=portfolio_risk` |
+| `ai_summaries.json` | `market_documents` | `doc_type=ai_summaries` |
+| `weekly_calendar.json` | `market_documents` | `doc_type=calendar` |
+| `etf_flow_analysis.json` | `market_documents` | `doc_type=etf_flow_analysis` |
 
-### 3) 심볼 매핑 정리
-- Yahoo 심볼과 FMP 심볼을 분리 관리
-- 예시 매핑:
-  - `BTC-USD` -> `BTCUSD`
-  - `GC=F` -> `GCUSD`
-  - `CL=F` -> `CLUSD`
-  - 지수는 `index-list` 기반 확인
+## 권장 스키마 (핵심 테이블 요약)
+실제 DDL은 `docs/db/schema.sql`을 기준으로 하며, 아래는 이해를 위한 요약입니다.
+### 1) `market_prices_daily`
+- `ticker` TEXT, `date` DATE, `open` REAL, `high` REAL, `low` REAL, `close` REAL, `volume` REAL
+- `change` REAL, `change_rate` REAL, `source` TEXT, `ingested_at` TEXT
+- PK: (`ticker`, `date`)
 
-### 4) 데이터 계약 유지
-- 기존 CSV/JSON 컬럼명을 변경하지 않는다.
-- `us_daily_prices.csv`: `ticker,date,open,high,low,current_price,volume,change,change_rate`
-- `smart_money_picks_v2.csv`, `us_etf_flows.csv` 등 기존 스키마 유지
+### 2) `market_volume_analysis`
+- `ticker` TEXT, `as_of_date` DATE
+- `supply_demand_score` REAL, `supply_demand_stage` TEXT, 기타 지표 컬럼
+- PK: (`ticker`, `as_of_date`)
 
-### 5) 테스트/의존성 정리
-- `tests/conftest.py`의 `mock_yfinance`를 FMP mock으로 교체
-- yfinance 제거:
-  - `requirements.txt`
-  - `us_market/requirements.txt`
-- 문서 업데이트:
-  - `PART1_Data_Collection.md`
-  - `PART2_Analysis_Screening.md`
-  - `strategy_overview.md`
+### 3) `market_smart_money_runs` / `market_smart_money_picks`
+- `market_smart_money_runs`: `run_id`, `analysis_date`, `analysis_timestamp`, `summary_json`, `created_at`
+- `market_smart_money_picks`: `run_id`, `rank`, `ticker`, `composite_score`, `grade`, `current_price`, `target_upside`, 기타 점수 컬럼
+- FK: picks.`run_id` -> runs.`run_id`
 
-## 품질 체크리스트
-- 파이프라인 전체 실행 (`us_market/update_all.py`) 시 실패 없이 완료
-- Flask 주요 엔드포인트 정상 응답
-- 캐시/레이트리밋 처리로 429 발생 최소화
+### 4) `market_documents`
+- `doc_type` TEXT, `as_of_date` DATE, `lang` TEXT, `model` TEXT, `payload_json` TEXT, `updated_at` TEXT
+- PK: (`doc_type`, `as_of_date`, `lang`, `model`)
 
-## 유의 사항
-- 옵션 체인은 FMP 문서에 없으므로 별도 공급자 검토 필요
+## 작업 지침
+1) DB 초기화 스크립트 작성
+   - 테이블 생성 + 인덱스 + PRAGMA 설정(WAL/foreign_keys/busy_timeout).
+2) 기존 CSV/JSON 일괄 마이그레이션 스크립트 작성
+   - 1회 import 후 CSV/JSON 의존 제거.
+3) 파이프라인 스크립트 수정
+   - 각 `us_market/*.py`가 결과를 DB에 저장하도록 변경.
+4) Flask API 수정
+   - 파일 읽기 대신 DB 조회로 응답 생성.
+5) 운영 검증
+   - 기존 API 응답 스키마 유지 확인.
+
+## 체크리스트
+- [ ] SQLite 초기 스키마 확정 및 마이그레이션 스크립트 추가
+- [ ] CSV/JSON -> DB 1회 백필 완료
+- [ ] 파이프라인 전 스크립트 DB 쓰기 전환
+- [ ] Flask API DB 읽기 전환 (응답 스키마 유지)
+- [ ] 데이터 계약(스키마/존재/최신성) 점검 로직 수정
+- [ ] CSV/JSON 파일 의존 제거 또는 export-only로 전환
 
 ## 완료 기준
-- yfinance import는 옵션/글로벌 fallback 외 제거됨
-- 산출물 스키마 불변
-- 테스트 통과
-
-## 참고
-- FMP 엔드포인트: `docs/fmp-migration-guide.md`
+- DB가 운영 데이터의 단일 소스가 됨
+- 기존 API가 동일한 스키마로 응답
+- CSV/JSON이 기본 데이터 경로에서 제거됨
