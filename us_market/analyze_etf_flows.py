@@ -23,6 +23,7 @@ if str(ROOT_DIR) not in sys.path:
 
 from utils.fmp_client import get_fmp_client
 from utils.symbols import to_fmp_symbol
+from utils.db_writer import get_db_connection, write_market_documents
 
 # Logging Configuration
 logging.basicConfig(
@@ -290,6 +291,7 @@ Keep the response concise and actionable.
         # Save CSV
         results_df.to_csv(self.output_csv, index=False)
         logger.info(f"✅ Saved ETF analysis to {self.output_csv}")
+        self._save_to_db(results_df)
         
         # Prepare data summary
         inflows = results_df[results_df['flow_status'].str.contains('Inflow')]
@@ -321,6 +323,8 @@ Keep the response concise and actionable.
         with open(self.output_json, 'w', encoding='utf-8') as f:
             json.dump(json_output, f, indent=2, ensure_ascii=False)
         logger.info(f"✅ Saved analysis JSON to {self.output_json}")
+        as_of_date = json_output.get("timestamp", "")[:10] or datetime.now().strftime("%Y-%m-%d")
+        write_market_documents("etf_flow_analysis", json_output, as_of_date=as_of_date)
         
         # Print summary
         logger.info("\n📊 ETF Flow Summary:")
@@ -331,6 +335,56 @@ Keep the response concise and actionable.
             logger.info(f"   {status}: {count}")
         
         return results_df
+
+    def _save_to_db(self, results_df: pd.DataFrame) -> int:
+        if results_df.empty:
+            return 0
+        conn = get_db_connection()
+        if conn is None:
+            return 0
+        inserted = 0
+        as_of_date = datetime.now().strftime("%Y-%m-%d")
+        try:
+            cursor = conn.cursor()
+            for _, row in results_df.iterrows():
+                try:
+                    cursor.execute(
+                        """
+                        INSERT OR REPLACE INTO market_etf_flows
+                        (ticker, as_of_date, name, category, current_price, price_1w_pct, price_1m_pct,
+                         vol_ratio_5d_20d, obv_change_20d_pct, avg_volume_20d, flow_score, flow_status,
+                         source, ingested_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'FMP', ?)
+                        """,
+                        (
+                            row.get("ticker"),
+                            as_of_date,
+                            row.get("name"),
+                            row.get("category"),
+                            row.get("current_price"),
+                            row.get("price_1w_pct"),
+                            row.get("price_1m_pct"),
+                            row.get("vol_ratio_5d_20d"),
+                            row.get("obv_change_20d_pct"),
+                            row.get("avg_volume_20d"),
+                            row.get("flow_score"),
+                            row.get("flow_status"),
+                            datetime.now().isoformat(),
+                        ),
+                    )
+                    inserted += 1
+                except Exception as exc:
+                    logger.debug("DB insert failed: %s", exc)
+            conn.commit()
+            logger.info("🗄️ SQLite: Inserted %d rows into market_etf_flows", inserted)
+        except Exception as exc:
+            logger.warning("⚠️ SQLite save failed (CSV still saved): %s", exc)
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        return inserted
 
 
 def main():

@@ -23,6 +23,7 @@ if str(ROOT_DIR) not in sys.path:
 
 from utils.fmp_client import get_fmp_client
 from utils.symbols import to_fmp_symbol
+from backtest.db_schema import init_db
 
 # SQLite toggle - dual-write enabled by default for DB transition
 USE_SQLITE = os.getenv('USE_SQLITE', 'true').lower() == 'true'
@@ -50,7 +51,7 @@ class USStockDailyPricesCreator:
         os.makedirs(self.snapshot_dir, exist_ok=True)
         
         # SQLite database path
-        self.db_path = os.path.join(self.data_dir, 'gyuant_market.db')
+        self.db_path = os.path.join(self.data_dir, 'gyuant.db')
         
         # Start date for historical data
         self.start_date = datetime(2020, 1, 1)
@@ -222,6 +223,7 @@ class USStockDailyPricesCreator:
         if not USE_SQLITE:
             return None
         try:
+            init_db(Path(self.db_path))
             # Ensure directory exists
             os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
             conn = sqlite3.connect(self.db_path, timeout=30)

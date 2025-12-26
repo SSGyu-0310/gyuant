@@ -6,11 +6,20 @@ Combines quant scores with AI analysis for final recommendations
 """
 
 import os
+import sys
 import json
 import logging
 import pandas as pd
 from datetime import datetime
 from typing import Dict, List
+from pathlib import Path
+
+# Add parent directory to path for imports
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.append(str(ROOT_DIR))
+
+from utils.db_writer import write_market_documents
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -129,6 +138,11 @@ class FinalReportGenerator:
         with open(self.output_file, 'w', encoding='utf-8') as f:
             json.dump(output, f, indent=2, ensure_ascii=False)
         logger.info(f"✅ Saved report to {self.output_file}")
+        write_market_documents(
+            "final_top10_report",
+            output,
+            as_of_date=output.get("timestamp", "")[:10],
+        )
         
         # Save dashboard-friendly version
         dashboard_output = {
@@ -139,6 +153,11 @@ class FinalReportGenerator:
         with open(self.dashboard_file, 'w', encoding='utf-8') as f:
             json.dump(dashboard_output, f, indent=2, ensure_ascii=False)
         logger.info(f"✅ Saved dashboard data to {self.dashboard_file}")
+        write_market_documents(
+            "smart_money_current",
+            dashboard_output,
+            as_of_date=output.get("timestamp", "")[:10],
+        )
         
         return output
     

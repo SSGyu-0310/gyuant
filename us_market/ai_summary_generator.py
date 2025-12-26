@@ -6,6 +6,7 @@ Generates investment summaries for top picks using Gemini AI
 """
 
 import os
+import sys
 import json
 import logging
 import time
@@ -14,9 +15,17 @@ import pandas as pd
 from datetime import datetime
 from tqdm import tqdm
 from dotenv import load_dotenv
+from pathlib import Path
 
 load_dotenv()
 load_dotenv(os.path.join(os.path.dirname(os.path.dirname(__file__)), '.env'))
+
+# Add parent directory to path for imports
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.append(str(ROOT_DIR))
+
+from utils.db_writer import write_market_documents
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -192,6 +201,7 @@ class AIStockAnalyzer:
         
         logger.info(f"✅ Generated {new_count} new summaries, total {len(results)}")
         logger.info(f"📁 Saved to {self.output_file}")
+        write_market_documents("ai_summaries", results)
         
         return results
     

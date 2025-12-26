@@ -12,6 +12,7 @@ Comprehensive analysis combining:
 
 import os
 import sys
+import json
 from pathlib import Path
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -35,6 +36,7 @@ if str(ROOT_DIR) not in sys.path:
 
 from utils.fmp_client import FMPClient
 from utils.symbols import to_fmp_symbol
+from utils.db_writer import get_db_connection
 
 # Logging Configuration
 logging.basicConfig(
@@ -1038,6 +1040,7 @@ class EnhancedSmartMoneyScreener:
         # Save results
         results_df.to_csv(self.output_file, index=False)
         logger.info(f"✅ Saved to {self.output_file}")
+        self._save_to_db(results_df)
         
         # Print summary
         logger.info("\n📊 Grade Distribution:")
@@ -1046,6 +1049,82 @@ class EnhancedSmartMoneyScreener:
             logger.info(f"   {grade}: {count} stocks")
         
         return results_df
+
+    def _save_to_db(self, results_df: pd.DataFrame) -> int:
+        if results_df.empty:
+            return 0
+        conn = get_db_connection()
+        if conn is None:
+            return 0
+        inserted = 0
+        now = datetime.utcnow().isoformat()
+        analysis_date = now[:10]
+        run_id = "sm_" + "".join(ch for ch in now if ch.isalnum())
+        summary = {
+            "total_analyzed": len(results_df),
+            "avg_score": round(float(results_df["composite_score"].mean()), 2),
+        }
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT OR IGNORE INTO market_smart_money_runs
+                (run_id, analysis_date, analysis_timestamp, summary_json, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (run_id, analysis_date, now, json.dumps(summary, ensure_ascii=False), now),
+            )
+
+            for _, row in results_df.iterrows():
+                try:
+                    cursor.execute(
+                        """
+                        INSERT OR REPLACE INTO market_smart_money_picks
+                        (run_id, rank, ticker, name, sector, composite_score, grade, current_price,
+                         price_at_rec, change_since_rec, target_upside, sd_score, tech_score, fund_score,
+                         analyst_score, rs_score, recommendation, rsi, ma_signal, pe_ratio, market_cap_b,
+                         size, rs_20d)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            run_id,
+                            row.get("rank"),
+                            row.get("ticker"),
+                            row.get("name"),
+                            row.get("sector"),
+                            row.get("composite_score"),
+                            row.get("grade"),
+                            row.get("current_price"),
+                            row.get("current_price"),
+                            0,
+                            row.get("target_upside"),
+                            row.get("sd_score"),
+                            row.get("tech_score"),
+                            row.get("fund_score"),
+                            row.get("analyst_score"),
+                            row.get("rs_score"),
+                            row.get("recommendation"),
+                            row.get("rsi"),
+                            row.get("ma_signal"),
+                            row.get("pe_ratio"),
+                            row.get("market_cap_b"),
+                            row.get("size"),
+                            row.get("rs_20d"),
+                        ),
+                    )
+                    inserted += 1
+                except Exception as exc:
+                    logger.debug("DB insert failed: %s", exc)
+            conn.commit()
+            logger.info("🗄️ SQLite: Inserted %d rows into market_smart_money_picks", inserted)
+        except Exception as exc:
+            logger.warning("⚠️ SQLite save failed (CSV still saved): %s", exc)
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        return inserted
 
 
 def main():
