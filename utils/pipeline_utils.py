@@ -10,6 +10,9 @@ from tempfile import NamedTemporaryFile
 from typing import Any, Dict, List, Optional
 
 from .contracts import get_contracts
+from backtest.db_schema import get_connection, init_db
+
+ALLOW_FILE_FALLBACK = os.getenv("ALLOW_FILE_FALLBACK", "false").lower() == "true"
 
 
 def resolve_paths() -> Dict[str, Path]:
@@ -91,6 +94,35 @@ def _mock_csv(contract: Dict[str, Any], path: Path) -> None:
     )
 
 
+def _validate_db_contract(contract: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    table = contract.get("db_table")
+    if not table:
+        return None
+    if not init_db():
+        return {"status": "db_unavailable", "source": "db", "db_table": table}
+
+    where = contract.get("db_where")
+    params = contract.get("db_params") or []
+    query = f"SELECT 1 FROM {table}"
+    if where:
+        query += f" WHERE {where}"
+    query += " LIMIT 1"
+
+    conn = get_connection()
+    try:
+        row = conn.execute(query, params).fetchone()
+        if row:
+            return {"status": "ok", "source": "db", "db_table": table}
+        return {"status": "missing", "source": "db", "db_table": table}
+    except Exception as e:
+        return {"status": "db_error", "source": "db", "db_table": table, "error": str(e)}
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
 def validate_contract(contract: Dict[str, Any], paths: Optional[Dict[str, Path]] = None) -> Dict[str, Any]:
     """
     Validate a data contract file.
@@ -104,7 +136,37 @@ def validate_contract(contract: Dict[str, Any], paths: Optional[Dict[str, Path]]
     path = data_dir / contract["file_path"]
     ensure_dir(path.parent)
 
-    result = {"module": contract["module"], "file": str(path), "status": "ok", "mocked": False}
+    result = {
+        "module": contract["module"],
+        "file": str(path),
+        "status": "ok",
+        "mocked": False,
+        "source": "file",
+    }
+
+    db_result = _validate_db_contract(contract)
+    if db_result:
+        result.update(db_result)
+        if db_result["status"] == "ok":
+            return result
+        if not ALLOW_FILE_FALLBACK:
+            _log_gap(
+                {
+                    "module": contract["module"],
+                    "file": str(path),
+                    "reason": "DB_MISSING",
+                    "details": {
+                        "table": db_result.get("db_table"),
+                        "status": db_result.get("status"),
+                        "error": db_result.get("error"),
+                    },
+                }
+            )
+            return result
+        result["source"] = "file"
+        result["status"] = "ok"
+        result["mocked"] = False
+        result.pop("error", None)
 
     # ONLY create mock file when file is completely missing
     if not path.exists():

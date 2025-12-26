@@ -6,6 +6,7 @@ Generates investment summaries for top picks using Gemini AI
 """
 
 import os
+import sys
 import json
 import logging
 import time
@@ -14,9 +15,17 @@ import pandas as pd
 from datetime import datetime
 from tqdm import tqdm
 from dotenv import load_dotenv
+from pathlib import Path
 
 load_dotenv()
 load_dotenv(os.path.join(os.path.dirname(os.path.dirname(__file__)), '.env'))
+
+# Add parent directory to path for imports
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.append(str(ROOT_DIR))
+
+from utils.db_writer import get_db_connection, fetch_latest_document, write_market_documents
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -128,24 +137,50 @@ class AIStockAnalyzer:
         """Generate AI summaries for top stocks"""
         logger.info(f"🤖 Starting AI Summary Generation (top {top_n})...")
         
-        # Load smart money picks
-        csv_path = os.path.join(self.data_dir, 'smart_money_picks_v2.csv')
-        if not os.path.exists(csv_path):
-            logger.warning("⚠️ smart_money_picks_v2.csv not found. Run smart_money_screener_v2.py first.")
+        # Load smart money picks from SQLite
+        conn = get_db_connection()
+        if conn is None:
+            logger.warning("⚠️ SQLite connection unavailable. Run migration or enable USE_SQLITE.")
             return {}
-        
-        df = pd.read_csv(csv_path).head(top_n)
-        logger.info(f"📊 Processing {len(df)} stocks")
-        
-        # Load existing summaries
-        results = {}
-        if os.path.exists(self.output_file):
+        try:
+            run_row = conn.execute(
+                """
+                SELECT run_id
+                FROM market_smart_money_runs
+                ORDER BY analysis_date DESC, created_at DESC
+                LIMIT 1
+                """
+            ).fetchone()
+            if not run_row:
+                logger.warning("⚠️ No smart money runs found in SQLite. Run smart_money_screener_v2.py first.")
+                return {}
+            run_id = run_row["run_id"]
+            df = pd.read_sql_query(
+                """
+                SELECT *
+                FROM market_smart_money_picks
+                WHERE run_id = ?
+                ORDER BY rank ASC
+                """,
+                conn,
+                params=[run_id],
+            )
+        finally:
             try:
-                with open(self.output_file, 'r', encoding='utf-8') as f:
-                    results = json.load(f)
-                logger.info(f"📂 Loaded {len(results)} existing summaries")
-            except:
-                results = {}
+                conn.close()
+            except Exception:
+                pass
+
+        if df.empty:
+            logger.warning("⚠️ Smart money picks are empty in SQLite.")
+            return {}
+        df = df.head(top_n)
+        logger.info("📊 Processing %d stocks from SQLite", len(df))
+        
+        # Load existing summaries from SQLite (export JSON is output-only)
+        results = fetch_latest_document("ai_summaries") or {}
+        if results:
+            logger.info("📂 Loaded %d existing summaries from SQLite", len(results))
         
         # Generate summaries
         new_count = 0
@@ -192,6 +227,7 @@ class AIStockAnalyzer:
         
         logger.info(f"✅ Generated {new_count} new summaries, total {len(results)}")
         logger.info(f"📁 Saved to {self.output_file}")
+        write_market_documents("ai_summaries", results)
         
         return results
     

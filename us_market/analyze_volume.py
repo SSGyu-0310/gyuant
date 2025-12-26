@@ -6,6 +6,7 @@ Calculates OBV, Accumulation/Distribution Line, Volume Surge Detection
 """
 
 import os
+import sys
 import pandas as pd
 import numpy as np
 import logging
@@ -14,6 +15,12 @@ from typing import Dict, List, Optional
 from tqdm import tqdm
 from pathlib import Path
 from dotenv import load_dotenv
+# Add parent directory to path for imports
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.append(str(ROOT_DIR))
+
+from utils.db_writer import get_db_connection
 
 # Load .env located at repo root (one level up from this script)
 load_dotenv(dotenv_path=Path(__file__).resolve().parent.parent / ".env")
@@ -35,12 +42,37 @@ class VolumeAnalyzer:
         self.output_file = os.path.join(self.data_dir, 'us_volume_analysis.csv')
         
     def load_prices(self) -> pd.DataFrame:
-        """Load daily price data"""
-        if not os.path.exists(self.prices_file):
-            raise FileNotFoundError(f"Price file not found: {self.prices_file}")
-        
-        logger.info(f"📂 Loading prices from {self.prices_file}")
-        df = pd.read_csv(self.prices_file)
+        """Load daily price data from SQLite (CSV is export-only)."""
+        conn = get_db_connection()
+        if conn is None:
+            raise RuntimeError("SQLite connection unavailable; cannot load price data.")
+
+        query = """
+            SELECT
+                p.ticker,
+                p.date,
+                p.open,
+                p.high,
+                p.low,
+                p.close AS current_price,
+                p.volume,
+                s.name
+            FROM market_prices_daily p
+            LEFT JOIN market_stocks s ON p.ticker = s.ticker
+        """
+        try:
+            logger.info("📂 Loading prices from SQLite: market_prices_daily")
+            df = pd.read_sql_query(query, conn)
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+        if df.empty:
+            logger.warning("⚠️ market_prices_daily is empty")
+            return df
+
         df['date'] = pd.to_datetime(df['date'], errors='coerce')
         invalid_dates = df['date'].isna().sum()
         if invalid_dates:
@@ -271,6 +303,7 @@ class VolumeAnalyzer:
         # Save results
         results_df.to_csv(self.output_file, index=False)
         logger.info(f"✅ Analysis complete! Saved to {self.output_file}")
+        self._save_to_db(results_df)
         
         # Print summary
         logger.info("\n📊 Summary:")
@@ -280,6 +313,56 @@ class VolumeAnalyzer:
                 logger.info(f"   {stage}: {count} stocks")
         
         return results_df
+
+    def _save_to_db(self, results_df: pd.DataFrame) -> int:
+        if results_df.empty:
+            return 0
+        conn = get_db_connection()
+        if conn is None:
+            return 0
+        inserted = 0
+        try:
+            cursor = conn.cursor()
+            for _, row in results_df.iterrows():
+                try:
+                    cursor.execute(
+                        """
+                        INSERT OR REPLACE INTO market_volume_analysis
+                        (ticker, as_of_date, name, obv, obv_change_20d, ad_line, ad_change_20d,
+                         mfi, vol_ratio_5d_20d, surge_count_5d, surge_count_20d,
+                         supply_demand_score, supply_demand_stage, source, ingested_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'script', ?)
+                        """,
+                        (
+                            row.get("ticker"),
+                            str(row.get("date", ""))[:10],
+                            row.get("name"),
+                            row.get("obv"),
+                            row.get("obv_change_20d"),
+                            row.get("ad_line"),
+                            row.get("ad_change_20d"),
+                            row.get("mfi"),
+                            row.get("vol_ratio_5d_20d"),
+                            row.get("surge_count_5d"),
+                            row.get("surge_count_20d"),
+                            row.get("supply_demand_score"),
+                            row.get("supply_demand_stage"),
+                            datetime.now().isoformat(),
+                        ),
+                    )
+                    inserted += 1
+                except Exception as exc:
+                    logger.debug("DB insert failed: %s", exc)
+            conn.commit()
+            logger.info("🗄️ SQLite: Inserted %d rows into market_volume_analysis", inserted)
+        except Exception as exc:
+            logger.warning("⚠️ SQLite save failed (CSV still saved): %s", exc)
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        return inserted
 
 
 def main():

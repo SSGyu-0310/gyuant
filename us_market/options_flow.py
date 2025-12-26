@@ -6,6 +6,7 @@ Analyzes options trading volume to detect institutional positioning
 """
 
 import os
+import sys
 import json
 import logging
 from datetime import datetime
@@ -13,6 +14,14 @@ from typing import Dict, List, Optional
 
 import pandas as pd
 import yfinance as yf
+from pathlib import Path
+
+# Add parent directory to path for imports
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.append(str(ROOT_DIR))
+
+from utils.db_writer import write_market_documents
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -155,6 +164,11 @@ class OptionsFlowAnalyzer:
         with open(self.output_file, 'w') as f:
             json.dump(output, f, indent=2)
         logger.info(f"✅ Saved to {self.output_file}")
+        write_market_documents(
+            "options_flow",
+            output,
+            as_of_date=output.get("timestamp", "")[:10],
+        )
         
         return output
     

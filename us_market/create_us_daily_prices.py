@@ -23,6 +23,7 @@ if str(ROOT_DIR) not in sys.path:
 
 from utils.fmp_client import get_fmp_client
 from utils.symbols import to_fmp_symbol
+from backtest.db_schema import init_db
 
 # SQLite toggle - dual-write enabled by default for DB transition
 USE_SQLITE = os.getenv('USE_SQLITE', 'true').lower() == 'true'
@@ -50,7 +51,7 @@ class USStockDailyPricesCreator:
         os.makedirs(self.snapshot_dir, exist_ok=True)
         
         # SQLite database path
-        self.db_path = os.path.join(self.data_dir, 'gyuant_market.db')
+        self.db_path = os.path.join(self.data_dir, 'gyuant.db')
         
         # Start date for historical data
         self.start_date = datetime(2020, 1, 1)
@@ -132,12 +133,182 @@ class USStockDailyPricesCreator:
         """Skip NASDAQ - already covered in S&P 500"""
         logger.info("📊 Skipping NASDAQ 100 (covered in S&P 500)...")
         return []
+
+    def _load_stocks_from_db(self) -> pd.DataFrame:
+        if not USE_SQLITE:
+            return pd.DataFrame()
+        conn = self._get_db_connection()
+        if conn is None:
+            return pd.DataFrame()
+        try:
+            query = """
+                SELECT ticker, name, sector, industry, market
+                FROM market_stocks
+                WHERE is_active = 1
+                ORDER BY ticker
+            """
+            return pd.read_sql_query(query, conn)
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to load market_stocks from SQLite: {e}")
+            return pd.DataFrame()
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    def _save_stocks_to_db(self, stocks_df: pd.DataFrame) -> int:
+        if not USE_SQLITE or stocks_df.empty:
+            return 0
+        conn = self._get_db_connection()
+        if conn is None:
+            return 0
+        try:
+            cursor = conn.cursor()
+            inserted = 0
+            now = datetime.utcnow().isoformat()
+            for _, row in stocks_df.iterrows():
+                try:
+                    cursor.execute(
+                        """
+                        INSERT OR REPLACE INTO market_stocks
+                        (ticker, name, sector, industry, market, source, updated_at)
+                        VALUES (?, ?, ?, ?, ?, 'FMP', ?)
+                        """,
+                        (
+                            row.get("ticker"),
+                            row.get("name"),
+                            row.get("sector", "N/A"),
+                            row.get("industry", "N/A"),
+                            row.get("market", "S&P500"),
+                            now,
+                        ),
+                    )
+                    inserted += 1
+                except Exception as e:
+                    logger.debug(f"DB insert failed for market_stocks: {e}")
+            conn.commit()
+            return inserted
+        except Exception as e:
+            logger.warning(f"⚠️ SQLite market_stocks save failed: {e}")
+            return 0
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    def _export_stocks_to_csv(self, stocks_df: pd.DataFrame) -> None:
+        if stocks_df.empty:
+            return
+        export_df = stocks_df.copy()
+        if "sector" not in export_df.columns:
+            export_df["sector"] = "N/A"
+        if "market" not in export_df.columns:
+            export_df["market"] = "S&P500"
+        export_cols = ["ticker", "name", "sector", "market"]
+        for col in export_cols:
+            if col not in export_df.columns:
+                export_df[col] = ""
+        export_df = export_df[export_cols]
+        export_df.to_csv(self.stocks_list_file, index=False)
+        logger.info(f"✅ Exported {len(export_df)} stocks to {self.stocks_list_file}")
+
+    def _get_latest_dates_from_db(self) -> Dict[str, datetime]:
+        if not USE_SQLITE:
+            return {}
+        conn = self._get_db_connection()
+        if conn is None:
+            return {}
+        latest_dates: Dict[str, datetime] = {}
+        try:
+            rows = conn.execute(
+                """
+                SELECT ticker, MAX(date) AS max_date
+                FROM market_prices_daily
+                GROUP BY ticker
+                """
+            ).fetchall()
+            for row in rows:
+                date_str = row["max_date"] if row else None
+                if not date_str:
+                    continue
+                try:
+                    latest_dates[row["ticker"]] = datetime.fromisoformat(date_str)
+                except Exception:
+                    continue
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to read latest dates from SQLite: {e}")
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        return latest_dates
+
+    def _export_prices_to_csv(self) -> int:
+        if not USE_SQLITE:
+            return 0
+        conn = self._get_db_connection()
+        if conn is None:
+            return 0
+        try:
+            query = """
+                SELECT
+                    p.ticker,
+                    p.date,
+                    p.open,
+                    p.high,
+                    p.low,
+                    p.close AS current_price,
+                    p.volume,
+                    p.change,
+                    p.change_rate,
+                    s.name,
+                    s.market
+                FROM market_prices_daily p
+                LEFT JOIN market_stocks s ON p.ticker = s.ticker
+                ORDER BY p.ticker, p.date
+            """
+            df = pd.read_sql_query(query, conn)
+            if df.empty:
+                return 0
+            export_cols = [
+                "ticker",
+                "date",
+                "open",
+                "high",
+                "low",
+                "current_price",
+                "volume",
+                "change",
+                "change_rate",
+                "name",
+                "market",
+            ]
+            for col in export_cols:
+                if col not in df.columns:
+                    df[col] = ""
+            df = df[export_cols]
+            df.to_csv(self.prices_file, index=False)
+            logger.info(f"📁 Exported {len(df)} rows to {self.prices_file}")
+            return len(df)
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to export prices CSV: {e}")
+            return 0
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
     
     def load_or_create_stock_list(self) -> pd.DataFrame:
         """Load existing stock list or create new one"""
-        if os.path.exists(self.stocks_list_file):
-            logger.info(f"📂 Loading existing stock list: {self.stocks_list_file}")
-            return pd.read_csv(self.stocks_list_file)
+        stocks_df = self._load_stocks_from_db()
+        if not stocks_df.empty:
+            logger.info("📂 Loaded stock list from SQLite: market_stocks")
+            self._export_stocks_to_csv(stocks_df)
+            return stocks_df
         
         # Create new stock list
         logger.info("📝 Creating new US stock list...")
@@ -150,30 +321,18 @@ class USStockDailyPricesCreator:
         stocks_df = pd.DataFrame(all_stocks)
         stocks_df = stocks_df.drop_duplicates(subset=['ticker'], keep='first')
         
-        # Save stock list
-        stocks_df.to_csv(self.stocks_list_file, index=False)
-        logger.info(f"✅ Saved {len(stocks_df)} stocks to {self.stocks_list_file}")
+        # Save to SQLite and export CSV
+        inserted = self._save_stocks_to_db(stocks_df)
+        if inserted:
+            logger.info(f"🗄️ SQLite: Inserted {inserted} rows into market_stocks")
+        self._export_stocks_to_csv(stocks_df)
         
         return stocks_df
     
     def load_existing_prices(self) -> pd.DataFrame:
-        """Load existing price data"""
-        if os.path.exists(self.prices_file):
-            logger.info(f"📂 Loading existing prices: {self.prices_file}")
-            df = pd.read_csv(self.prices_file)
-            df['date'] = pd.to_datetime(df['date'], errors='coerce')
-            invalid_dates = df['date'].isna().sum()
-            if invalid_dates:
-                logger.warning(f"Dropped {invalid_dates} rows with invalid dates in existing file")
-                df = df.dropna(subset=['date'])
-            return df
+        """Deprecated: CSV is export-only. Use SQLite for source data."""
+        logger.warning("⚠️ load_existing_prices is deprecated; SQLite is the source of truth.")
         return pd.DataFrame()
-    
-    def get_latest_dates(self, df: pd.DataFrame) -> Dict[str, datetime]:
-        """Get latest date for each ticker"""
-        if df.empty:
-            return {}
-        return df.groupby('ticker')['date'].max().to_dict()
     
     def download_stock_data(self, ticker: str, start_date: datetime, end_date: datetime) -> pd.DataFrame:
         """Download daily price data for a single stock"""
@@ -222,6 +381,7 @@ class USStockDailyPricesCreator:
         if not USE_SQLITE:
             return None
         try:
+            init_db(Path(self.db_path))
             # Ensure directory exists
             os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
             conn = sqlite3.connect(self.db_path, timeout=30)
@@ -397,9 +557,8 @@ class USStockDailyPricesCreator:
             self.save_universe_snapshot(stocks_df, today_str)
             self._save_universe_to_db(stocks_df, today_str)  # Dual-write to SQLite
             
-            # 2. Load existing data
-            existing_df = pd.DataFrame() if full_refresh else self.load_existing_prices()
-            latest_dates = self.get_latest_dates(existing_df)
+            # 2. Load existing data from SQLite (CSV is export-only)
+            latest_dates = {} if full_refresh else self._get_latest_dates_from_db()
             
             # 3. Determine target end date
             now = datetime.now()
@@ -427,21 +586,16 @@ class USStockDailyPricesCreator:
                 
                 if not new_data.empty:
                     # Add name from stock list
-                    new_data['name'] = row['name']
-                    new_data['market'] = row['market']
+                    new_data['name'] = row.get('name', ticker)
+                    new_data['market'] = row.get('market', 'S&P500')
                     all_new_data.append(new_data)
                 else:
                     failed_tickers.append(ticker)
             
-            # 5. Combine and save
+            # 5. Save to SQLite and export CSV
             if all_new_data:
                 new_df = pd.concat(all_new_data, ignore_index=True)
-                
-                if not existing_df.empty:
-                    final_df = pd.concat([existing_df, new_df])
-                    final_df = final_df.drop_duplicates(subset=['ticker', 'date'], keep='last')
-                else:
-                    final_df = new_df
+                final_df = new_df.copy()
                 
                 # Normalize dates, sort, and save
                 final_df['date'] = pd.to_datetime(final_df['date'], errors='coerce')
@@ -452,18 +606,24 @@ class USStockDailyPricesCreator:
 
                 final_df = final_df.sort_values(['ticker', 'date']).reset_index(drop=True)
                 final_df['date'] = final_df['date'].dt.strftime('%Y-%m-%d')
-                final_df.to_csv(self.prices_file, index=False)
-                
-                # Dual-write to SQLite if enabled
-                self._save_to_db(new_df)
-                
-                logger.info(f"✅ Saved {len(new_df)} new records to {self.prices_file}")
-                logger.info(f"📊 Total records: {len(final_df)}")
+
+                # Write to SQLite first
+                inserted = self._save_to_db(final_df)
+                if inserted:
+                    logger.info(f"🗄️ SQLite: Inserted {inserted} new records into market_prices_daily")
+
+                # Export CSV from SQLite (export-only)
+                exported = self._export_prices_to_csv()
+                if exported:
+                    logger.info(f"📊 Total records exported: {exported}")
+                logger.info(f"✅ Saved {len(final_df)} new records to SQLite")
             else:
                 if not os.path.exists(self.prices_file):
-                    cols = ['ticker', 'date', 'open', 'high', 'low', 'current_price', 'volume', 'change', 'change_rate']
-                    pd.DataFrame(columns=cols).to_csv(self.prices_file, index=False)
-                    logger.warning(f"⚠️ No data collected; created empty file at {self.prices_file}")
+                    exported = self._export_prices_to_csv()
+                    if not exported:
+                        cols = ['ticker', 'date', 'open', 'high', 'low', 'current_price', 'volume', 'change', 'change_rate', 'name', 'market']
+                        pd.DataFrame(columns=cols).to_csv(self.prices_file, index=False)
+                        logger.warning(f"⚠️ No data collected; created empty file at {self.prices_file}")
                 else:
                     logger.info("✨ All data is up to date!")
             

@@ -98,6 +98,7 @@ def make_client(tmp_path, monkeypatch, mock_fmp_client):
         monkeypatch.setenv("DATA_DIR", str(data_dir))
         monkeypatch.setenv("LOG_DIR", str(tmp_path / "logs"))
         monkeypatch.setenv("HISTORY_DIR", str(tmp_path / "history"))
+        monkeypatch.setenv("ALLOW_FILE_FALLBACK", "true")
         if with_data:
             _prepare_minimal_files(data_dir)
         if "flask_app" in sys.modules:

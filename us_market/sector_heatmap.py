@@ -20,6 +20,7 @@ if str(ROOT_DIR) not in sys.path:
 
 from utils.fmp_client import get_fmp_client
 from utils.symbols import map_symbols_to_fmp, to_fmp_symbol
+from utils.db_writer import write_market_documents
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -310,6 +311,11 @@ class SectorHeatmapCollector:
         with open(output_file, 'w', encoding='utf-8') as f:
             json.dump(output, f, ensure_ascii=False, indent=2)
         logger.info(f"✅ Saved to {output_file}")
+        write_market_documents(
+            "sector_heatmap",
+            output,
+            as_of_date=output.get("data_date"),
+        )
         
         # Print summary
         if 'sectors' in sector_data:
