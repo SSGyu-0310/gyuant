@@ -3,17 +3,18 @@
 """
 US Stock Daily Prices Collection Script
 Collects daily price data for NASDAQ and S&P 500 stocks using FMP
-Similar to create_complete_daily_prices.py for Korean stocks
+Supports dual-write to CSV and SQLite for backtesting
 """
 
 import os
 import sys
+import sqlite3
 from pathlib import Path
 import pandas as pd
 import numpy as np
 import logging
 from datetime import datetime, timedelta
-from typing import Dict, List
+from typing import Dict, List, Optional
 from tqdm import tqdm
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -22,6 +23,9 @@ if str(ROOT_DIR) not in sys.path:
 
 from utils.fmp_client import get_fmp_client
 from utils.symbols import to_fmp_symbol
+
+# SQLite toggle - dual-write enabled by default for DB transition
+USE_SQLITE = os.getenv('USE_SQLITE', 'true').lower() == 'true'
 
 # Logging Configuration
 logging.basicConfig(
@@ -40,6 +44,13 @@ class USStockDailyPricesCreator:
         # Data file paths
         self.prices_file = os.path.join(self.output_dir, 'us_daily_prices.csv')
         self.stocks_list_file = os.path.join(self.output_dir, 'us_stocks_list.csv')
+        
+        # Backtest paths
+        self.snapshot_dir = os.path.join(self.data_dir, 'backtest', 'universe_snapshots')
+        os.makedirs(self.snapshot_dir, exist_ok=True)
+        
+        # SQLite database path
+        self.db_path = os.path.join(self.data_dir, 'us_price.db')
         
         # Start date for historical data
         self.start_date = datetime(2020, 1, 1)
@@ -206,6 +217,169 @@ class USStockDailyPricesCreator:
             logger.debug(f"⚠️ Failed to download {ticker}: {e}")
             return pd.DataFrame()
     
+    def _get_db_connection(self) -> Optional[sqlite3.Connection]:
+        """Get SQLite connection with proper settings (returns None if not using SQLite)"""
+        if not USE_SQLITE:
+            return None
+        try:
+            # Ensure directory exists
+            os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
+            conn = sqlite3.connect(self.db_path, timeout=30)
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA busy_timeout=30000")
+            return conn
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to connect to SQLite: {e}")
+            return None
+    
+    def _save_to_db(self, df: pd.DataFrame) -> int:
+        """
+        Save price data to SQLite database (dual-write).
+        Falls back gracefully if DB is unavailable.
+        
+        Args:
+            df: DataFrame with price data
+            
+        Returns:
+            Number of rows inserted (0 if failed or disabled)
+        """
+        if not USE_SQLITE or df.empty:
+            return 0
+        
+        conn = self._get_db_connection()
+        if conn is None:
+            return 0
+        
+        try:
+            cursor = conn.cursor()
+            inserted = 0
+            
+            for _, row in df.iterrows():
+                try:
+                    cursor.execute("""
+                        INSERT OR IGNORE INTO daily_prices 
+                        (ticker, date, open, high, low, close, volume, change, change_rate, name, market, source, as_of)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'FMP', ?)
+                    """, (
+                        row.get('ticker'),
+                        row.get('date'),
+                        row.get('open'),
+                        row.get('high'),
+                        row.get('low'),
+                        row.get('current_price'),  # Maps to 'close' in DB
+                        row.get('volume'),
+                        row.get('change'),
+                        row.get('change_rate'),
+                        row.get('name'),
+                        row.get('market'),
+                        datetime.now().isoformat(),
+                    ))
+                    inserted += cursor.rowcount
+                except Exception as e:
+                    logger.debug(f"DB insert failed: {e}")
+            
+            conn.commit()
+            conn.close()
+            logger.info(f"🗄️ SQLite: Inserted {inserted} rows into daily_prices")
+            return inserted
+            
+        except Exception as e:
+            logger.warning(f"⚠️ SQLite save failed (CSV still saved): {e}")
+            try:
+                conn.close()
+            except:
+                pass
+            return 0
+    
+    def _save_universe_to_db(self, stocks_df: pd.DataFrame, date_str: str) -> int:
+        """
+        Save universe snapshot to SQLite database.
+        
+        Args:
+            stocks_df: DataFrame with stock list
+            date_str: Date string (YYYY-MM-DD)
+            
+        Returns:
+            Number of rows inserted
+        """
+        if not USE_SQLITE or stocks_df.empty:
+            return 0
+        
+        conn = self._get_db_connection()
+        if conn is None:
+            return 0
+        
+        try:
+            cursor = conn.cursor()
+            inserted = 0
+            
+            for _, row in stocks_df.iterrows():
+                try:
+                    cursor.execute("""
+                        INSERT OR IGNORE INTO universe_snapshots 
+                        (date, ticker, name, sector, market)
+                        VALUES (?, ?, ?, ?, ?)
+                    """, (
+                        date_str,
+                        row.get('ticker'),
+                        row.get('name'),
+                        row.get('sector', 'N/A'),
+                        row.get('market', 'S&P500'),
+                    ))
+                    inserted += cursor.rowcount
+                except Exception as e:
+                    logger.debug(f"DB insert failed: {e}")
+            
+            conn.commit()
+            conn.close()
+            if inserted > 0:
+                logger.info(f"🗄️ SQLite: Inserted {inserted} rows into universe_snapshots")
+            return inserted
+            
+        except Exception as e:
+            logger.warning(f"⚠️ SQLite universe save failed: {e}")
+            try:
+                conn.close()
+            except:
+                pass
+            return 0
+    
+    def save_universe_snapshot(self, stocks_df: pd.DataFrame, date_str: str) -> bool:
+        """Save current universe as a snapshot for backtest survivorship bias prevention
+        
+        Args:
+            stocks_df: DataFrame with stock list (ticker, name, sector columns)
+            date_str: Date string in YYYY-MM-DD format
+            
+        Returns:
+            True if snapshot was saved, False otherwise
+        """
+        snapshot_path = os.path.join(self.snapshot_dir, f"{date_str}.csv")
+        if os.path.exists(snapshot_path):
+            logger.info(f"📸 Snapshot already exists: {snapshot_path}")
+            return True
+        
+        try:
+            # Prepare snapshot with required columns
+            snapshot_df = stocks_df[['ticker', 'name']].copy()
+            snapshot_df.insert(0, 'date', date_str)
+            
+            # Add sector column (use N/A if not present)
+            if 'sector' in stocks_df.columns:
+                snapshot_df['sector'] = stocks_df['sector']
+            else:
+                snapshot_df['sector'] = 'N/A'
+            
+            # Ensure column order: date, ticker, name, sector
+            snapshot_df = snapshot_df[['date', 'ticker', 'name', 'sector']]
+            
+            snapshot_df.to_csv(snapshot_path, index=False)
+            logger.info(f"📸 Saved universe snapshot: {snapshot_path} ({len(snapshot_df)} stocks)")
+            return True
+        except Exception as e:
+            logger.warning(f"Failed to save snapshot: {e}")
+            return False
+    
     def run(self, full_refresh: bool = False) -> bool:
         """Run data collection (incremental by default)"""
         logger.info("🚀 US Stock Daily Prices Collection Started...")
@@ -218,6 +392,11 @@ class USStockDailyPricesCreator:
             if stocks_df.empty:
                 logger.error("❌ No stocks to process")
                 return False
+            
+            # 1.5 Save universe snapshot for today (prevents survivorship bias)
+            today_str = datetime.now().strftime('%Y-%m-%d')
+            self.save_universe_snapshot(stocks_df, today_str)
+            self._save_universe_to_db(stocks_df, today_str)  # Dual-write to SQLite
             
             # 2. Load existing data
             existing_df = pd.DataFrame() if full_refresh else self.load_existing_prices()
@@ -275,6 +454,9 @@ class USStockDailyPricesCreator:
                 final_df = final_df.sort_values(['ticker', 'date']).reset_index(drop=True)
                 final_df['date'] = final_df['date'].dt.strftime('%Y-%m-%d')
                 final_df.to_csv(self.prices_file, index=False)
+                
+                # Dual-write to SQLite if enabled
+                self._save_to_db(new_df)
                 
                 logger.info(f"✅ Saved {len(new_df)} new records to {self.prices_file}")
                 logger.info(f"📊 Total records: {len(final_df)}")
