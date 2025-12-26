@@ -12,6 +12,11 @@ import logging
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 from tqdm import tqdm
+from pathlib import Path
+from dotenv import load_dotenv
+
+# Load .env located at repo root (one level up from this script)
+load_dotenv(dotenv_path=Path(__file__).resolve().parent.parent / ".env")
 
 # Logging Configuration
 logging.basicConfig(
