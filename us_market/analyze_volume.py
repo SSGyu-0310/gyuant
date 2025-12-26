@@ -42,12 +42,37 @@ class VolumeAnalyzer:
         self.output_file = os.path.join(self.data_dir, 'us_volume_analysis.csv')
         
     def load_prices(self) -> pd.DataFrame:
-        """Load daily price data"""
-        if not os.path.exists(self.prices_file):
-            raise FileNotFoundError(f"Price file not found: {self.prices_file}")
-        
-        logger.info(f"📂 Loading prices from {self.prices_file}")
-        df = pd.read_csv(self.prices_file)
+        """Load daily price data from SQLite (CSV is export-only)."""
+        conn = get_db_connection()
+        if conn is None:
+            raise RuntimeError("SQLite connection unavailable; cannot load price data.")
+
+        query = """
+            SELECT
+                p.ticker,
+                p.date,
+                p.open,
+                p.high,
+                p.low,
+                p.close AS current_price,
+                p.volume,
+                s.name
+            FROM market_prices_daily p
+            LEFT JOIN market_stocks s ON p.ticker = s.ticker
+        """
+        try:
+            logger.info("📂 Loading prices from SQLite: market_prices_daily")
+            df = pd.read_sql_query(query, conn)
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+        if df.empty:
+            logger.warning("⚠️ market_prices_daily is empty")
+            return df
+
         df['date'] = pd.to_datetime(df['date'], errors='coerce')
         invalid_dates = df['date'].isna().sum()
         if invalid_dates:

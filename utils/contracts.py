@@ -13,6 +13,7 @@ CONTRACTS: List[Contract] = [
     {
         "module": "smart_money_current",
         "file_path": Path("smart_money_current.json"),
+        "db_table": "market_smart_money_runs",
         "type": "json",
         "required_keys": ["picks", "analysis_date", "summary"],
         "minimal_mock_object": {
@@ -26,6 +27,7 @@ CONTRACTS: List[Contract] = [
     {
         "module": "smart_money_csv",
         "file_path": Path("smart_money_picks_v2.csv"),
+        "db_table": "market_smart_money_picks",
         "type": "csv",
         # Columns that are actually output by smart_money_screener_v2.py
         "required_columns": [
@@ -41,6 +43,7 @@ CONTRACTS: List[Contract] = [
     {
         "module": "etf_flows",
         "file_path": Path("us_etf_flows.csv"),
+        "db_table": "market_etf_flows",
         "type": "csv",
         "required_columns": [
             "ticker",
@@ -61,6 +64,9 @@ CONTRACTS: List[Contract] = [
     {
         "module": "etf_flow_analysis",
         "file_path": Path("etf_flow_analysis.json"),
+        "db_table": "market_documents",
+        "db_where": "doc_type = ? AND lang = ? AND model = ?",
+        "db_params": ["etf_flow_analysis", "na", "na"],
         "type": "json",
         "required_keys": ["ai_analysis"],
         "minimal_mock_object": {"ai_analysis": "", "data_summary": {}, "timestamp": ""},
@@ -69,6 +75,9 @@ CONTRACTS: List[Contract] = [
     {
         "module": "macro",
         "file_path": Path("macro_analysis.json"),
+        "db_table": "market_documents",
+        "db_where": "doc_type = ? AND lang = ? AND model = ?",
+        "db_params": ["macro_analysis", "ko", "gemini"],
         "type": "json",
         "required_keys": ["macro_indicators", "ai_analysis"],
         "minimal_mock_object": {"macro_indicators": {}, "ai_analysis": "", "timestamp": ""},
@@ -77,6 +86,9 @@ CONTRACTS: List[Contract] = [
     {
         "module": "macro_en",
         "file_path": Path("macro_analysis_en.json"),
+        "db_table": "market_documents",
+        "db_where": "doc_type = ? AND lang = ? AND model = ?",
+        "db_params": ["macro_analysis", "en", "gemini"],
         "type": "json",
         "required_keys": ["macro_indicators", "ai_analysis"],
         "minimal_mock_object": {"macro_indicators": {}, "ai_analysis": "", "timestamp": ""},
@@ -85,6 +97,9 @@ CONTRACTS: List[Contract] = [
     {
         "module": "macro_gpt",
         "file_path": Path("macro_analysis_gpt.json"),
+        "db_table": "market_documents",
+        "db_where": "doc_type = ? AND lang = ? AND model = ?",
+        "db_params": ["macro_analysis", "ko", "gpt"],
         "type": "json",
         "required_keys": ["macro_indicators", "ai_analysis"],
         "minimal_mock_object": {"macro_indicators": {}, "ai_analysis": "", "timestamp": ""},
@@ -93,6 +108,9 @@ CONTRACTS: List[Contract] = [
     {
         "module": "macro_gpt_en",
         "file_path": Path("macro_analysis_gpt_en.json"),
+        "db_table": "market_documents",
+        "db_where": "doc_type = ? AND lang = ? AND model = ?",
+        "db_params": ["macro_analysis", "en", "gpt"],
         "type": "json",
         "required_keys": ["macro_indicators", "ai_analysis"],
         "minimal_mock_object": {"macro_indicators": {}, "ai_analysis": "", "timestamp": ""},
@@ -101,6 +119,9 @@ CONTRACTS: List[Contract] = [
     {
         "module": "heatmap",
         "file_path": Path("sector_heatmap.json"),
+        "db_table": "market_documents",
+        "db_where": "doc_type = ? AND lang = ? AND model = ?",
+        "db_params": ["sector_heatmap", "na", "na"],
         "type": "json",
         "required_keys": ["series"],
         "minimal_mock_object": {
@@ -112,6 +133,9 @@ CONTRACTS: List[Contract] = [
     {
         "module": "options",
         "file_path": Path("options_flow.json"),
+        "db_table": "market_documents",
+        "db_where": "doc_type = ? AND lang = ? AND model = ?",
+        "db_params": ["options_flow", "na", "na"],
         "type": "json",
         "required_keys": ["options_flow"],
         "minimal_mock_object": {"options_flow": [], "summary": {}, "timestamp": ""},
@@ -120,6 +144,9 @@ CONTRACTS: List[Contract] = [
     {
         "module": "ai_summaries",
         "file_path": Path("ai_summaries.json"),
+        "db_table": "market_documents",
+        "db_where": "doc_type = ? AND lang = ? AND model = ?",
+        "db_params": ["ai_summaries", "na", "na"],
         "type": "json",
         "required_keys": [],
         "minimal_mock_object": {},
@@ -128,6 +155,9 @@ CONTRACTS: List[Contract] = [
     {
         "module": "calendar",
         "file_path": Path("weekly_calendar.json"),
+        "db_table": "market_documents",
+        "db_where": "doc_type = ? AND lang = ? AND model = ?",
+        "db_params": ["calendar", "na", "na"],
         "type": "json",
         "required_keys": ["events"],
         "minimal_mock_object": {"week_start": "", "week_end": "", "events": []},
@@ -136,6 +166,7 @@ CONTRACTS: List[Contract] = [
     {
         "module": "us_volume",
         "file_path": Path("us_volume_analysis.csv"),
+        "db_table": "market_volume_analysis",
         "type": "csv",
         "required_columns": [
             "ticker",
@@ -149,6 +180,7 @@ CONTRACTS: List[Contract] = [
     {
         "module": "us_stocks",
         "file_path": Path("us_stocks_list.csv"),
+        "db_table": "market_stocks",
         "type": "csv",
         "required_columns": ["ticker", "name", "sector", "market"],
         "minimal_mock_rows": [],
@@ -157,6 +189,7 @@ CONTRACTS: List[Contract] = [
     {
         "module": "us_prices",
         "file_path": Path("us_daily_prices.csv"),
+        "db_table": "market_prices_daily",
         "type": "csv",
         "required_columns": ["ticker", "date", "close"],
         "minimal_mock_rows": [],

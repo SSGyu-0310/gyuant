@@ -61,3 +61,34 @@ def write_market_documents(
             conn.close()
         except Exception:
             pass
+
+
+def fetch_latest_document(doc_type: str, lang: str = "na", model: str = "na") -> Any:
+    if not USE_SQLITE:
+        return {}
+    conn = get_db_connection()
+    if conn is None:
+        return {}
+    try:
+        row = conn.execute(
+            """
+            SELECT payload_json
+            FROM market_documents
+            WHERE doc_type = ? AND lang = ? AND model = ?
+            ORDER BY as_of_date DESC, updated_at DESC
+            LIMIT 1
+            """,
+            (doc_type, lang, model),
+        ).fetchone()
+        if not row:
+            return {}
+        payload = row["payload_json"] if isinstance(row, dict) or hasattr(row, "__getitem__") else None
+        return json.loads(payload) if payload else {}
+    except Exception as e:
+        logger.warning("Failed to read market_documents %s: %s", doc_type, e)
+        return {}
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass

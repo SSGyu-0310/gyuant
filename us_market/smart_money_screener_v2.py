@@ -58,66 +58,70 @@ class PriceStore:
         self._load()
 
     def _load(self) -> None:
-        price_file = self.data_dir / "us_daily_prices.csv"
-        if not price_file.exists():
-            logger.warning("PriceStore: local price file not found: %s", price_file)
+        conn = get_db_connection()
+        if conn is None:
+            logger.warning("PriceStore: SQLite connection unavailable")
             return
         try:
-            usecols = [
-                "ticker",
-                "date",
-                "open",
-                "high",
-                "low",
-                "current_price",
-                "volume",
-                "name",
-            ]
-            dtype = {
-                "ticker": "category",
-                "name": "category",
-                "open": "float64",
-                "high": "float64",
-                "low": "float64",
-                "current_price": "float64",
-                "volume": "Int64",
-            }
-            df = pd.read_csv(price_file, usecols=lambda c: c in usecols, dtype={k: v for k, v in dtype.items() if k != "volume"})
+            cutoff = (datetime.utcnow().date() - timedelta(days=self.lookback_days + 10)).isoformat()
+            query = """
+                SELECT
+                    p.ticker,
+                    p.date,
+                    p.open,
+                    p.high,
+                    p.low,
+                    p.close AS current_price,
+                    p.volume,
+                    s.name
+                FROM market_prices_daily p
+                LEFT JOIN market_stocks s ON p.ticker = s.ticker
+                WHERE p.date >= ?
+            """
+            df = pd.read_sql_query(query, conn, params=[cutoff])
             if df.empty:
-                logger.warning("PriceStore: local price file is empty: %s", price_file)
+                logger.warning("PriceStore: market_prices_daily is empty")
                 return
             if "date" not in df.columns or "ticker" not in df.columns:
-                logger.warning("PriceStore: required columns missing in %s", price_file)
+                logger.warning("PriceStore: required columns missing in market_prices_daily")
                 return
             df["date"] = pd.to_datetime(df["date"], errors="coerce")
             df = df.dropna(subset=["date", "ticker"])
             df["ticker"] = df["ticker"].astype("category")
             if "name" in df.columns:
                 df["name"] = df["name"].astype("category")
+            dtype = {
+                "open": "float64",
+                "high": "float64",
+                "low": "float64",
+                "current_price": "float64",
+                "volume": "Int64",
+            }
             for col in ("open", "high", "low", "current_price", "volume"):
                 if col in df.columns:
                     try:
                         df[col] = df[col].astype(dtype.get(col, "float64"))
                     except Exception:
                         df[col] = pd.to_numeric(df[col], errors="coerce")
-            # Keep only recent window to save memory
-            cutoff = pd.Timestamp(datetime.utcnow().date() - timedelta(days=self.lookback_days + 10))
-            df = df[df["date"] >= cutoff]
             df = df.sort_values(["ticker", "date"])
             self.has_spy = (df["ticker"] == "SPY").any()
             self.df = df
             self.loaded = True
             logger.info(
-                "PriceStore: loaded %d rows (%d tickers, SPY present=%s) from %s",
+                "PriceStore: loaded %d rows (%d tickers, SPY present=%s) from SQLite",
                 len(df),
                 df["ticker"].nunique(),
                 self.has_spy,
-                price_file,
             )
         except Exception as exc:
-            logger.warning("PriceStore: failed to load %s: %s", price_file, exc)
+            logger.warning("PriceStore: failed to load from SQLite: %s", exc)
             self.df = None
             self.loaded = False
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     def has_data(self, ticker: str) -> bool:
         return bool(self.loaded and self.df is not None and not self.df[self.df["ticker"] == ticker].empty)
@@ -197,19 +201,39 @@ class EnhancedSmartMoneyScreener:
     def load_data(self) -> bool:
         """Load all analysis results"""
         try:
-            # Volume Analysis
-            vol_file = os.path.join(self.data_dir, 'us_volume_analysis.csv')
-            if os.path.exists(vol_file):
-                self.volume_df = pd.read_csv(vol_file)
-                logger.info(f"✅ Loaded volume analysis: {len(self.volume_df)} stocks")
-            else:
-                logger.warning("⚠️ Volume analysis not found")
+            conn = get_db_connection()
+            if conn is None:
+                logger.warning("⚠️ SQLite connection unavailable")
                 return False
-            
-            # ETF Flows
-            etf_file = os.path.join(self.data_dir, 'us_etf_flows.csv')
-            if os.path.exists(etf_file):
-                self.etf_df = pd.read_csv(etf_file)
+
+            try:
+                # Volume Analysis (latest snapshot)
+                volume_query = """
+                    SELECT *
+                    FROM market_volume_analysis
+                    WHERE as_of_date = (SELECT MAX(as_of_date) FROM market_volume_analysis)
+                """
+                self.volume_df = pd.read_sql_query(volume_query, conn)
+                if self.volume_df.empty:
+                    logger.warning("⚠️ Volume analysis not found in SQLite")
+                    return False
+                logger.info("✅ Loaded volume analysis from SQLite: %d stocks", len(self.volume_df))
+
+                # ETF Flows (latest snapshot)
+                etf_query = """
+                    SELECT *
+                    FROM market_etf_flows
+                    WHERE as_of_date = (SELECT MAX(as_of_date) FROM market_etf_flows)
+                """
+                self.etf_df = pd.read_sql_query(etf_query, conn)
+                if self.etf_df.empty:
+                    logger.warning("⚠️ ETF flows not found in SQLite")
+                    self.etf_df = None
+            finally:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
             
             # Load SPY for relative strength
             logger.info("📈 Loading SPY benchmark data...")
