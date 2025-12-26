@@ -1,43 +1,81 @@
-# Step 5: Alpha Generalization (파라미터 + 지표 확장)
+# Step 5: Alpha 확장 로드맵 (파라미터 -> 사용자 정의 -> LLM)
 
 ## 목표
-현재의 고정된 알파를 범용화하여 파라미터 조정 및 지표 확장을 가능하게 한다.
+고정 전략을 점진적으로 확장하여
+1) 파라미터 튜닝,
+2) 사용자 정의 알파,
+3) 자연어 알파(LLM 변환)
+까지 단계적으로 구현한다.
 
 ## 범위
-- 포함: 알파 인터페이스 정의, 파라미터화, 실험 결과 관리.
-- 제외: 대규모 자동 최적화(필요 시 후속 단계).
+- 포함: 알파 정의/버전 관리, 파라미터 실험, 사용자 정의 알파 빌더, LLM 변환 파이프라인.
+- 제외: 대규모 자동 최적화(필요 시 별도 단계).
 
-## 구현 지침 (에이전트용)
-### 1) 알파 인터페이스 정의
-권장 형태:
-- 입력: 가격/재무/지표 데이터프레임 + `config`
-- 출력: `signals` (ticker, as_of_date, signal_value)
+## 단계별 확장 계획
 
-### 2) 파라미터 구성 파일
-권장 구조:
-- `alpha_configs/{alpha_id}.json`
-- 예: `lookback`, `threshold`, `top_n` 등
+### Phase A: 파라미터 튜닝 (작은 확장)
+**목표**: 기존 고정 전략을 “설정 가능한 알파”로 전환.
 
-### 3) 알파 레지스트리
-권장 구조:
-- `alpha/registry.py` 에 `alpha_id -> 함수` 매핑
-- 기존 알파는 baseline으로 고정 보존
+- 파라미터 예시
+  - `top_n`, `hold_period_days`, `rebalance_freq`, `min_score`, `universe_filter`
+- 저장 구조
+  - `bt_signal_definitions.params_schema_json`에 파라미터 스키마 저장
+  - `bt_runs.config_json`에 실제 파라미터 저장
+- 결과 비교
+  - `bt_run_metrics`로 성과 비교
+  - `bt_alpha_runs`(선택) 테이블로 실험 로그 관리
 
-### 4) 실험 관리
-저장:
-- `backtest/alpha_runs.csv`
-- 컬럼 예: `alpha_id`, `config_hash`, `CAGR`, `Sharpe`, `MDD`, `run_id`
+**체크리스트**
+- [ ] 파라미터 스키마 정의 (JSON schema)
+- [ ] UI에서 파라미터 입력 가능
+- [ ] 동일 알파/다른 설정 비교 기능
 
-### 5) 과최적화 방지
-- 최소한의 train/validation 구간 분리
-- 성능이 과도하게 튀는 설정은 제외
+### Phase B: 사용자 정의 알파 (조금 더 유연한 범위)
+**목표**: 사용자가 지표를 조합해 알파를 생성하고 백테스트 가능.
 
-## 테스트 전략
-- 파라미터 변경에 따라 결과가 변화하는지 검증
-- baseline 알파 결과가 유지되는지 회귀 테스트
+- 알파 정의 테이블(권장)
+  - `bt_alpha_defs`: `alpha_id`, `name`, `description`, `expression`, `status`, `created_at`
+  - `bt_alpha_versions`: `alpha_id`, `version`, `expression`, `params_schema_json`, `created_at`
+- 표현 방식(안전한 DSL/룰 기반)
+  - 허용 필드/함수 allow-list
+  - 예: `score = 0.5*rank(roe) - 0.5*rank(pe_ratio)`
+- 검증 절차
+  - 파서/타입 체크 → 샘플 데이터 실행 → 점수 분포 확인
+
+**체크리스트**
+- [ ] 알파 DSL/룰 문법 확정
+- [ ] 알파 검증 파이프라인 구축
+- [ ] 알파 생성/저장/수정 UI 제공
+
+### Phase C: 자연어 알파 (LLM 변환)
+**목표**: 사용자가 자연어로 알파를 설명하면 LLM이 안전한 알파 정의로 변환하고 저장.
+
+- 저장 구조(권장)
+  - `bt_alpha_nl_requests`: `request_id`, `user_input`, `llm_output`, `model`, `status`, `created_at`
+  - `bt_alpha_defs`에 최종 승인된 알파만 저장
+- 안전장치
+  - allow-list 필드/함수만 사용
+  - 실행 전 규칙 검증 + human approval 단계
+  - 복잡도 제한(연산 수, 함수 깊이, 데이터 범위)
+- 운영 정책
+  - 실패 시 이유를 저장하고 UI에 반환
+  - 승인/거절 이력 관리
+
+**체크리스트**
+- [ ] 자연어 -> DSL 변환 프롬프트/템플릿 정의
+- [ ] 안전성 검증(정적 분석) 구현
+- [ ] 승인 워크플로우 및 로그 저장
+
+## 공통 고려사항
+- **버전 관리**: 알파는 버전 단위로 고정 재현 가능해야 함
+- **재현성**: 동일 입력/데이터에서 동일 결과 보장
+- **보안**: 임의 코드 실행 금지, SQL 직접 실행 금지
+- **성능**: 지표 계산은 사전 계산 또는 캐시 활용
+
+## 관련 문서
+- `docs/db/schema.sql`: `bt_alpha_*` 및 `bt_runs` 테이블 정의
 
 ## 완료 기준
-- 알파 설정 파일 기반으로 실행 가능
-- 최소 3개 설정 결과 비교 가능
-- baseline 결과 재현 가능
-
+- Phase A: 파라미터 변경에 따라 결과가 달라짐을 검증
+- Phase B: 사용자 알파 1개 이상 생성 및 백테스트 성공
+- Phase C: 자연어 알파 1개 이상 승인/저장 및 백테스트 성공
