@@ -41,7 +41,11 @@ class VolumeAnalyzer:
         
         logger.info(f"📂 Loading prices from {self.prices_file}")
         df = pd.read_csv(self.prices_file)
-        df['date'] = pd.to_datetime(df['date'])
+        df['date'] = pd.to_datetime(df['date'], errors='coerce')
+        invalid_dates = df['date'].isna().sum()
+        if invalid_dates:
+            logger.warning(f"Dropped {invalid_dates} rows with invalid dates")
+            df = df.dropna(subset=['date'])
         return df
     
     def calculate_obv(self, df: pd.DataFrame) -> pd.Series:

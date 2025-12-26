@@ -150,7 +150,11 @@ class USStockDailyPricesCreator:
         if os.path.exists(self.prices_file):
             logger.info(f"📂 Loading existing prices: {self.prices_file}")
             df = pd.read_csv(self.prices_file)
-            df['date'] = pd.to_datetime(df['date'])
+            df['date'] = pd.to_datetime(df['date'], errors='coerce')
+            invalid_dates = df['date'].isna().sum()
+            if invalid_dates:
+                logger.warning(f"Dropped {invalid_dates} rows with invalid dates in existing file")
+                df = df.dropna(subset=['date'])
             return df
         return pd.DataFrame()
     
@@ -261,8 +265,15 @@ class USStockDailyPricesCreator:
                 else:
                     final_df = new_df
                 
-                # Sort and save
+                # Normalize dates, sort, and save
+                final_df['date'] = pd.to_datetime(final_df['date'], errors='coerce')
+                invalid_dates = final_df['date'].isna().sum()
+                if invalid_dates:
+                    logger.warning(f"Dropped {invalid_dates} rows with invalid dates before saving")
+                    final_df = final_df.dropna(subset=['date'])
+
                 final_df = final_df.sort_values(['ticker', 'date']).reset_index(drop=True)
+                final_df['date'] = final_df['date'].dt.strftime('%Y-%m-%d')
                 final_df.to_csv(self.prices_file, index=False)
                 
                 logger.info(f"✅ Saved {len(new_df)} new records to {self.prices_file}")
