@@ -3,6 +3,7 @@
 """
 Backtest Data Loader (DAO)
 Point-in-Time data access for backtesting without look-ahead bias
+Aligned with docs/db/schema.sql - uses bt_* tables
 """
 
 import os
@@ -27,16 +28,10 @@ logger = logging.getLogger(__name__)
 class BacktestDataLoader:
     """
     Data loader for backtesting with Point-in-Time queries.
-    Prevents look-ahead bias by only returning data available as of the query date.
+    Uses bt_* tables to prevent look-ahead bias.
     """
     
     def __init__(self, db_path: Optional[Path] = None):
-        """
-        Initialize data loader.
-        
-        Args:
-            db_path: Path to SQLite database (uses default if None)
-        """
         self.db_path = db_path or get_db_path()
     
     def get_prices_as_of(
@@ -47,24 +42,16 @@ class BacktestDataLoader:
     ) -> pd.DataFrame:
         """
         Get price data as of a specific date (no future data).
-        
-        Args:
-            as_of_date: Reference date (YYYY-MM-DD), only data <= this date
-            ticker_list: List of tickers to query (all if None)
-            lookback_days: Number of days to look back
-            
-        Returns:
-            DataFrame with price data
+        Uses bt_prices_daily table.
         """
         try:
             conn = get_connection(self.db_path)
             
-            # Build query
             if ticker_list:
                 placeholders = ','.join(['?' for _ in ticker_list])
                 query = f"""
-                    SELECT ticker, date, open, high, low, close, volume, change, change_rate
-                    FROM daily_prices
+                    SELECT ticker, date, open, high, low, close, volume
+                    FROM bt_prices_daily
                     WHERE date <= ?
                       AND date >= date(?, '-{lookback_days} days')
                       AND ticker IN ({placeholders})
@@ -73,8 +60,8 @@ class BacktestDataLoader:
                 params = [as_of_date, as_of_date] + ticker_list
             else:
                 query = f"""
-                    SELECT ticker, date, open, high, low, close, volume, change, change_rate
-                    FROM daily_prices
+                    SELECT ticker, date, open, high, low, close, volume
+                    FROM bt_prices_daily
                     WHERE date <= ?
                       AND date >= date(?, '-{lookback_days} days')
                     ORDER BY ticker, date
@@ -96,16 +83,7 @@ class BacktestDataLoader:
         as_of_date: str,
         ticker_list: Optional[List[str]] = None
     ) -> pd.DataFrame:
-        """
-        Get the latest available price for each ticker as of a date.
-        
-        Args:
-            as_of_date: Reference date
-            ticker_list: List of tickers to query
-            
-        Returns:
-            DataFrame with latest price per ticker
-        """
+        """Get the latest available price for each ticker as of a date."""
         try:
             conn = get_connection(self.db_path)
             
@@ -113,10 +91,10 @@ class BacktestDataLoader:
                 placeholders = ','.join(['?' for _ in ticker_list])
                 query = f"""
                     SELECT ticker, date, close, volume
-                    FROM daily_prices
+                    FROM bt_prices_daily
                     WHERE (ticker, date) IN (
                         SELECT ticker, MAX(date) as date
-                        FROM daily_prices
+                        FROM bt_prices_daily
                         WHERE date <= ?
                           AND ticker IN ({placeholders})
                         GROUP BY ticker
@@ -126,10 +104,10 @@ class BacktestDataLoader:
             else:
                 query = """
                     SELECT ticker, date, close, volume
-                    FROM daily_prices
+                    FROM bt_prices_daily
                     WHERE (ticker, date) IN (
                         SELECT ticker, MAX(date) as date
-                        FROM daily_prices
+                        FROM bt_prices_daily
                         WHERE date <= ?
                         GROUP BY ticker
                     )
@@ -147,22 +125,16 @@ class BacktestDataLoader:
     def get_universe_as_of(self, as_of_date: str) -> pd.DataFrame:
         """
         Get the universe snapshot as of a specific date.
-        Returns the closest available snapshot <= as_of_date.
-        
-        Args:
-            as_of_date: Reference date (YYYY-MM-DD)
-            
-        Returns:
-            DataFrame with universe members
+        Uses bt_universe_snapshot table.
         """
         try:
             conn = get_connection(self.db_path)
             
             # Find closest snapshot date
             query = """
-                SELECT MAX(date) as snapshot_date
-                FROM universe_snapshots
-                WHERE date <= ?
+                SELECT MAX(as_of_date) as snapshot_date
+                FROM bt_universe_snapshot
+                WHERE as_of_date <= ?
             """
             cursor = conn.execute(query, [as_of_date])
             result = cursor.fetchone()
@@ -173,11 +145,10 @@ class BacktestDataLoader:
                 conn.close()
                 return pd.DataFrame()
             
-            # Get snapshot data
             query = """
-                SELECT date, ticker, name, sector, market
-                FROM universe_snapshots
-                WHERE date = ?
+                SELECT as_of_date, ticker, name, sector, market
+                FROM bt_universe_snapshot
+                WHERE as_of_date = ?
                 ORDER BY ticker
             """
             df = pd.read_sql_query(query, conn, params=[snapshot_date])
@@ -194,42 +165,35 @@ class BacktestDataLoader:
         self,
         as_of_date: str,
         signal_id: str,
+        signal_version: str = "1.0",
         ticker_list: Optional[List[str]] = None
     ) -> pd.DataFrame:
-        """
-        Get signals as of a specific date.
-        
-        Args:
-            as_of_date: Reference date
-            signal_id: Signal identifier
-            ticker_list: Optional ticker filter
-            
-        Returns:
-            DataFrame with signals
-        """
+        """Get signals as of a specific date from bt_signals."""
         try:
             conn = get_connection(self.db_path)
             
             if ticker_list:
                 placeholders = ','.join(['?' for _ in ticker_list])
                 query = f"""
-                    SELECT as_of_date, ticker, signal_value, signal_version
-                    FROM signals
+                    SELECT as_of_date, ticker, signal_value, signal_rank
+                    FROM bt_signals
                     WHERE as_of_date <= ?
                       AND signal_id = ?
+                      AND signal_version = ?
                       AND ticker IN ({placeholders})
-                    ORDER BY as_of_date DESC, ticker
+                    ORDER BY as_of_date DESC, signal_rank ASC
                 """
-                params = [as_of_date, signal_id] + ticker_list
+                params = [as_of_date, signal_id, signal_version] + ticker_list
             else:
                 query = """
-                    SELECT as_of_date, ticker, signal_value, signal_version
-                    FROM signals
+                    SELECT as_of_date, ticker, signal_value, signal_rank
+                    FROM bt_signals
                     WHERE as_of_date <= ?
                       AND signal_id = ?
-                    ORDER BY as_of_date DESC, ticker
+                      AND signal_version = ?
+                    ORDER BY as_of_date DESC, signal_rank ASC
                 """
-                params = [as_of_date, signal_id]
+                params = [as_of_date, signal_id, signal_version]
             
             df = pd.read_sql_query(query, conn, params=params)
             conn.close()
@@ -239,45 +203,47 @@ class BacktestDataLoader:
             logger.error(f"Failed to get signals: {e}")
             return pd.DataFrame()
     
-    def save_signal(
+    def get_market_prices(
         self,
-        as_of_date: str,
-        ticker: str,
-        signal_id: str,
-        signal_value: float,
-        signal_version: str = "1.0"
-    ) -> bool:
-        """
-        Save a signal to the database.
-        
-        Args:
-            as_of_date: Signal calculation date
-            ticker: Stock ticker
-            signal_id: Signal identifier
-            signal_value: Signal value
-            signal_version: Version string
-            
-        Returns:
-            True if successful
-        """
+        start_date: str,
+        end_date: str,
+        ticker_list: Optional[List[str]] = None
+    ) -> pd.DataFrame:
+        """Get operational market prices (for Flask API etc)."""
         try:
             conn = get_connection(self.db_path)
-            conn.execute("""
-                INSERT OR REPLACE INTO signals
-                (as_of_date, ticker, signal_id, signal_value, signal_version, created_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (as_of_date, ticker, signal_id, signal_value, signal_version, datetime.now().isoformat()))
-            conn.commit()
+            
+            if ticker_list:
+                placeholders = ','.join(['?' for _ in ticker_list])
+                query = f"""
+                    SELECT ticker, date, open, high, low, close, volume, change, change_rate
+                    FROM market_prices_daily
+                    WHERE date BETWEEN ? AND ?
+                      AND ticker IN ({placeholders})
+                    ORDER BY ticker, date
+                """
+                params = [start_date, end_date] + ticker_list
+            else:
+                query = """
+                    SELECT ticker, date, open, high, low, close, volume, change, change_rate
+                    FROM market_prices_daily
+                    WHERE date BETWEEN ? AND ?
+                    ORDER BY ticker, date
+                """
+                params = [start_date, end_date]
+            
+            df = pd.read_sql_query(query, conn, params=params)
             conn.close()
-            return True
+            return df
+            
         except Exception as e:
-            logger.error(f"Failed to save signal: {e}")
-            return False
+            logger.error(f"Failed to get market prices: {e}")
+            return pd.DataFrame()
 
 
 # Convenience functions
 def get_prices_as_of(date: str, ticker_list: Optional[List[str]] = None) -> pd.DataFrame:
-    """Convenience function for getting prices as of a date."""
+    """Convenience function for getting backtest prices as of a date."""
     loader = BacktestDataLoader()
     return loader.get_prices_as_of(date, ticker_list)
 
@@ -291,21 +257,18 @@ def get_universe_as_of(date: str) -> pd.DataFrame:
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
     
-    # Demo usage
     loader = BacktestDataLoader()
     
     print("📊 Backtest Data Loader Demo")
     print("=" * 50)
+    print(f"Database: {loader.db_path}")
     
-    # Test point-in-time query
     test_date = "2024-12-20"
     print(f"\n🔍 Querying data as of {test_date}...")
     
-    # Get universe
     universe = loader.get_universe_as_of(test_date)
     print(f"   Universe: {len(universe)} tickers")
     
-    # Get prices for a few tickers
     if not universe.empty:
         sample_tickers = universe['ticker'].head(5).tolist()
         prices = loader.get_prices_as_of(test_date, sample_tickers, lookback_days=30)

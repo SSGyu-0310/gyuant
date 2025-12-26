@@ -50,7 +50,7 @@ class USStockDailyPricesCreator:
         os.makedirs(self.snapshot_dir, exist_ok=True)
         
         # SQLite database path
-        self.db_path = os.path.join(self.data_dir, 'us_price.db')
+        self.db_path = os.path.join(self.data_dir, 'gyuant_market.db')
         
         # Start date for historical data
         self.start_date = datetime(2020, 1, 1)
@@ -257,9 +257,9 @@ class USStockDailyPricesCreator:
             for _, row in df.iterrows():
                 try:
                     cursor.execute("""
-                        INSERT OR IGNORE INTO daily_prices 
-                        (ticker, date, open, high, low, close, volume, change, change_rate, name, market, source, as_of)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'FMP', ?)
+                        INSERT OR IGNORE INTO market_prices_daily 
+                        (ticker, date, open, high, low, close, volume, change, change_rate, source, ingested_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'FMP', ?)
                     """, (
                         row.get('ticker'),
                         row.get('date'),
@@ -270,8 +270,6 @@ class USStockDailyPricesCreator:
                         row.get('volume'),
                         row.get('change'),
                         row.get('change_rate'),
-                        row.get('name'),
-                        row.get('market'),
                         datetime.now().isoformat(),
                     ))
                     inserted += cursor.rowcount
@@ -280,7 +278,7 @@ class USStockDailyPricesCreator:
             
             conn.commit()
             conn.close()
-            logger.info(f"🗄️ SQLite: Inserted {inserted} rows into daily_prices")
+            logger.info(f"🗄️ SQLite: Inserted {inserted} rows into market_prices_daily")
             return inserted
             
         except Exception as e:
@@ -316,15 +314,16 @@ class USStockDailyPricesCreator:
             for _, row in stocks_df.iterrows():
                 try:
                     cursor.execute("""
-                        INSERT OR IGNORE INTO universe_snapshots 
-                        (date, ticker, name, sector, market)
-                        VALUES (?, ?, ?, ?, ?)
+                        INSERT OR IGNORE INTO bt_universe_snapshot 
+                        (as_of_date, ticker, name, sector, market, source, ingested_at)
+                        VALUES (?, ?, ?, ?, ?, 'FMP', ?)
                     """, (
                         date_str,
                         row.get('ticker'),
                         row.get('name'),
                         row.get('sector', 'N/A'),
                         row.get('market', 'S&P500'),
+                        datetime.now().isoformat(),
                     ))
                     inserted += cursor.rowcount
                 except Exception as e:
@@ -333,7 +332,7 @@ class USStockDailyPricesCreator:
             conn.commit()
             conn.close()
             if inserted > 0:
-                logger.info(f"🗄️ SQLite: Inserted {inserted} rows into universe_snapshots")
+                logger.info(f"🗄️ SQLite: Inserted {inserted} rows into bt_universe_snapshot")
             return inserted
             
         except Exception as e:
