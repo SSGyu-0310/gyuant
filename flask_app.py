@@ -16,7 +16,6 @@ from typing import Dict, List, Any, Tuple
 
 import numpy as np
 import pandas as pd
-import yfinance as yf
 from flask import Flask, jsonify, render_template, request, g
 
 from utils.fmp_client import get_fmp_client
@@ -36,7 +35,7 @@ if not request_logger.handlers:
     request_logger.setLevel(logging.INFO)
     request_logger.propagate = False
 
-logging.getLogger("yfinance").setLevel(logging.CRITICAL)
+
 
 app = Flask(__name__)
 
@@ -57,8 +56,7 @@ OPT_VOL_OI_RATIO_HIGH = float(os.getenv("OPT_VOL_OI_RATIO_HIGH", "5"))
 OPT_VOL_OI_RATIO_MID = float(os.getenv("OPT_VOL_OI_RATIO_MID", "3"))
 OPT_VOLUME_LARGE = float(os.getenv("OPT_VOLUME_LARGE", "5000"))
 OPT_IV_HIGH = float(os.getenv("OPT_IV_HIGH", "80"))
-YF_FAIL_COOLDOWN_SEC = int(os.getenv("YF_FAIL_COOLDOWN_SEC", "600"))
-YF_FAIL_UNTIL: Dict[str, float] = {}
+
 
 
 # ------------- Error Handling -------------
@@ -98,28 +96,6 @@ def handle_exception(e):
 
 
 # ------------- Static Data / Helpers -------------
-def _yf_should_skip(ticker: str) -> bool:
-    return YF_FAIL_UNTIL.get(ticker, 0) > time.time()
-
-
-def _yf_mark_fail(ticker: str) -> None:
-    if YF_FAIL_COOLDOWN_SEC > 0:
-        YF_FAIL_UNTIL[ticker] = time.time() + YF_FAIL_COOLDOWN_SEC
-
-
-def _yf_history_safe(ticker: str, period: str) -> pd.DataFrame:
-    if _yf_should_skip(ticker):
-        return pd.DataFrame()
-    try:
-        hist = yf.Ticker(ticker).history(period=period)
-        if hist.empty:
-            _yf_mark_fail(ticker)
-        return hist
-    except Exception as e:
-        _yf_mark_fail(ticker)
-        logger.debug("yfinance history failed for %s: %s", ticker, e)
-        return pd.DataFrame()
-
 
 # Sector mapping for major US stocks (S&P 500 + popular stocks)
 SECTOR_MAP = {
@@ -305,8 +281,6 @@ def _before_request():
         "cache_misses": 0,
         "fmp_calls": 0,
         "fmp_batches": 0,
-        "yf_calls": 0,
-        "yf_batches": 0,
         "parallel_tasks": 0,
     }
 
@@ -344,8 +318,6 @@ def _after_request(response):
             "path": request.path,
             "fmp_calls": stats.get("fmp_calls", 0),
             "fmp_batches": stats.get("fmp_batches", 0),
-            "yfinance_calls": stats.get("yf_calls", 0),
-            "yfinance_batched": stats.get("yf_batches", 0),
             "cache_hits": stats.get("cache_hits", 0),
             "cache_misses": stats.get("cache_misses", 0),
             "parallel_tasks": stats.get("parallel_tasks", 0),
@@ -566,33 +538,30 @@ def get_us_portfolio_data():
     try:
         ensure_contracts(["us_prices"])
         market_indices = []
+        # FMP-native symbols (no Yahoo-style conversion needed)
         indices_map = {
-            '^DJI': 'Dow Jones',
-            '^GSPC': 'S&P 500',
-            '^IXIC': 'NASDAQ',
-            '^RUT': 'Russell 2000',
-            '^VIX': 'VIX',
-            'GC=F': 'Gold',
-            'CL=F': 'Crude Oil',
-            'BTC-USD': 'Bitcoin',
-            'DX-Y.NYB': 'Dollar Index',
+            'DJI': 'Dow Jones',
+            'GSPC': 'S&P 500',
+            'NDX': 'NASDAQ',
+            'RUT': 'Russell 2000',
+            'VIX': 'VIX',
+            'GCUSD': 'Gold',
+            'CLUSD': 'Crude Oil',
+            'BTCUSD': 'Bitcoin',
+            'DXUSD': 'Dollar Index',
         }
 
         fmp = get_fmp_client()
-        fmp_symbols, _ = map_symbols_to_fmp(indices_map.keys())
-        quotes = fmp.quote(fmp_symbols)
+        quotes = fmp.quote(list(indices_map.keys()))
         get_perf_stats()["fmp_calls"] += 1
         get_perf_stats()["fmp_batches"] += 1
-        seen_symbols = set()
 
         quote_map = {item.get("symbol"): item for item in quotes if isinstance(item, dict)}
-        for yf_symbol, name in indices_map.items():
+        for symbol, name in indices_map.items():
             try:
-                symbol = to_fmp_symbol(yf_symbol)
                 item = quote_map.get(symbol)
                 if not item:
                     continue
-                seen_symbols.add(symbol)
                 price = safe_float(item.get("price"), 0)
                 prev_close = safe_float(item.get("previousClose"), 0)
                 change = item.get("change")
@@ -613,7 +582,7 @@ def get_us_portfolio_data():
                     'color': 'green' if change >= 0 else 'red'
                 })
             except Exception as e:
-                logger.debug(f"Index parse failed {yf_symbol}: {e}")
+                logger.debug(f"Index parse failed {symbol}: {e}")
 
         # Treasury rates (10Y)
         try:

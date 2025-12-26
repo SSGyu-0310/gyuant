@@ -2,21 +2,28 @@
 # -*- coding: utf-8 -*-
 """
 Economic Calendar with AI Impact Analysis
-Fetches economic events and provides AI-powered impact assessment
+Fetches economic events from FMP and provides AI-powered impact assessment
 """
 
 import os
+import sys
 import json
-import requests
 import logging
-import pandas as pd
+from pathlib import Path
 from datetime import datetime, timedelta
-from io import StringIO
 from typing import Dict, List
+
 from dotenv import load_dotenv
 
 load_dotenv()
 load_dotenv(os.path.join(os.path.dirname(os.path.dirname(__file__)), '.env'))
+
+# Add parent directory to path for imports
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.append(str(ROOT_DIR))
+
+from utils.fmp_client import get_fmp_client
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -29,6 +36,7 @@ class EconomicCalendar:
         self.data_dir = data_dir
         self.output_file = os.path.join(data_dir, 'weekly_calendar.json')
         self.api_key = os.getenv('GOOGLE_API_KEY') or os.getenv('GEMINI_API_KEY')
+        self.fmp = get_fmp_client()
         
         # Important recurring events
         self.major_events = [
@@ -43,73 +51,78 @@ class EconomicCalendar:
         ]
     
     def get_events(self) -> List[Dict]:
-        """Get economic events"""
+        """Get economic events from FMP API"""
         events = []
         
-        # Try to scrape Yahoo Finance calendar
+        # Calculate date range (this week)
+        today = datetime.now()
+        start_date = today.strftime('%Y-%m-%d')
+        end_date = (today + timedelta(days=7)).strftime('%Y-%m-%d')
+        
         try:
-            url = "https://finance.yahoo.com/calendar/economic"
-            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-            resp = requests.get(url, headers=headers, timeout=10)
+            # Fetch from FMP Economic Calendar API
+            data = self.fmp.get_json(
+                '/stable/economic-calendar',
+                params={'from': start_date, 'to': end_date}
+            )
             
-            if resp.status_code == 200:
-                try:
-                    dfs = pd.read_html(StringIO(resp.text))
-                    if dfs:
-                        df = dfs[0]
-                        # Filter for US events if Country column exists
-                        if 'Country' in df.columns:
-                            df = df[df['Country'] == 'US']
-                        
-                        for _, row in df.head(20).iterrows():
-                            event_name = row.get('Event', row.get('Name', 'Unknown'))
-                            
-                            # Determine impact level
+            if data and isinstance(data, list):
+                for item in data[:30]:  # Limit to 30 events
+                    # Filter for US events
+                    country = item.get('country', '')
+                    if country and country.upper() not in ['US', 'USA', 'UNITED STATES']:
+                        continue
+                    
+                    event_name = item.get('event', 'Unknown')
+                    
+                    # Determine impact level from FMP data or infer from event name
+                    fmp_impact = item.get('impact', '').lower()
+                    if fmp_impact in ['high', 'high impact']:
+                        impact = 'High'
+                    elif fmp_impact in ['medium', 'medium impact']:
+                        impact = 'Medium'
+                    elif fmp_impact in ['low', 'low impact']:
+                        impact = 'Low'
+                    else:
+                        # Infer from event name
+                        high_impact_keywords = ['FOMC', 'Fed', 'CPI', 'GDP', 'Payroll', 'NFP', 'Interest Rate']
+                        if any(kw.lower() in str(event_name).lower() for kw in high_impact_keywords):
+                            impact = 'High'
+                        else:
                             impact = 'Medium'
-                            high_impact_keywords = ['FOMC', 'Fed', 'CPI', 'GDP', 'Payroll', 'NFP', 'Interest Rate']
-                            if any(kw.lower() in str(event_name).lower() for kw in high_impact_keywords):
-                                impact = 'High'
-                            
-                            events.append({
-                                'date': datetime.now().strftime('%Y-%m-%d'),
-                                'event': str(event_name),
-                                'impact': impact,
-                                'actual': str(row.get('Actual', '-')),
-                                'expected': str(row.get('Market Expectation', row.get('Expected', '-'))),
-                                'previous': str(row.get('Prior', row.get('Previous', '-'))),
-                                'description': ''
-                            })
-                except Exception as e:
-                    logger.debug(f"Error parsing Yahoo calendar: {e}")
+                    
+                    events.append({
+                        'date': item.get('date', today.strftime('%Y-%m-%d'))[:10],
+                        'event': str(event_name),
+                        'impact': impact,
+                        'actual': str(item.get('actual', '-') or '-'),
+                        'expected': str(item.get('estimate', item.get('consensus', '-')) or '-'),
+                        'previous': str(item.get('previous', '-') or '-'),
+                        'description': ''
+                    })
+                    
+                logger.info(f"📊 Fetched {len(events)} US economic events from FMP")
                     
         except Exception as e:
-            logger.warning(f"Could not fetch Yahoo calendar: {e}")
+            logger.warning(f"Could not fetch FMP calendar: {e}")
         
-        # Add manual important events for this week
-        today = datetime.now()
-        week_dates = [(today + timedelta(days=i)).strftime('%Y-%m-%d') for i in range(7)]
-        
-        # Common recurring events
-        manual_events = [
-            {
-                'date': week_dates[0],
-                'event': 'Market Open Analysis',
-                'impact': 'Low',
-                'description': 'Weekly market conditions review'
-            }
-        ]
-        
-        # Add weekly Thursday jobless claims
-        for i, date in enumerate(week_dates):
-            if (today + timedelta(days=i)).weekday() == 3:  # Thursday
-                manual_events.append({
-                    'date': date,
-                    'event': 'Initial Jobless Claims',
-                    'impact': 'Medium',
-                    'description': 'Weekly unemployment claims data'
-                })
-        
-        events.extend(manual_events)
+        # Add manual fallback events if FMP returns nothing
+        if not events:
+            logger.info("📅 Using fallback economic events")
+            week_dates = [(today + timedelta(days=i)).strftime('%Y-%m-%d') for i in range(7)]
+            
+            # Add weekly Thursday jobless claims
+            for i, date in enumerate(week_dates):
+                if (today + timedelta(days=i)).weekday() == 3:  # Thursday
+                    events.append({
+                        'date': date,
+                        'event': 'Initial Jobless Claims',
+                        'impact': 'Medium',
+                        'actual': '-',
+                        'expected': '-',
+                        'previous': '-',
+                        'description': 'Weekly unemployment claims data'
+                    })
         
         # Sort by date
         events.sort(key=lambda x: x['date'])
@@ -121,6 +134,8 @@ class EconomicCalendar:
         if not self.api_key:
             logger.warning("⚠️ No API key for AI enrichment")
             return events
+
+        import requests
         
         url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
         
