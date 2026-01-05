@@ -39,17 +39,17 @@
 - `etf_flow_analysis.json` -> `doc_type=etf_flow_analysis`
 
 ## 4) 검증 체크
-- [ ] 로우 카운트 비교(CSV vs DB)
-- [ ] PK 중복 여부 체크
-- [ ] 날짜 포맷 ISO 여부 확인
-- [ ] 샘플 티커로 시계열 조회 정상 동작 확인
-- [ ] `market_smart_money_runs` 최신 run_id 기준으로 picks 조인 확인
+- [x] 로우 카운트 비교(CSV vs DB)
+- [x] PK 중복 여부 체크 (market_prices_daily)
+- [x] 날짜 포맷 ISO 여부 확인 (market_prices_daily)
+- [x] 샘플 티커로 시계열 조회 정상 동작 확인
+- [x] `market_smart_money_runs` 최신 run_id 기준으로 picks 조인 확인
 
 ## 5) 애플리케이션 전환
-- [ ] 파이프라인 스크립트 DB 쓰기 전환
-- [ ] Flask API DB 읽기 전환 (응답 스키마 동일)
-- [ ] 데이터 계약/검증 로직 DB 기준으로 수정
-- [ ] CSV/JSON 파일 의존 제거 (export 용도만 유지)
+- [x] 파이프라인 스크립트 DB 쓰기 전환
+- [x] Flask API DB 읽기 전환 (응답 스키마 동일)
+- [x] 데이터 계약/검증 로직 DB 기준으로 수정
+- [x] CSV/JSON 파일 의존 제거 (export 용도만 유지)
 
 ## 6) 롤백 계획
 - [ ] DB 백업 파일 보관

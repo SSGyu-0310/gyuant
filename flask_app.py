@@ -24,6 +24,7 @@ from utils.pipeline_utils import ensure_contracts
 from utils.perf_utils import cache_get_or_set, get_perf_stats, get_request_cache, perf_env_threads_enabled, perf_max_workers
 from utils.symbols import map_symbols_to_fmp, to_fmp_symbol
 from utils.options_unusual import score_options_flow, load_options_raw
+from backtest.db_schema import get_connection
 from collections import defaultdict
 from utils.data_access import get_prices, get_tickers, get_volume_analysis
 
@@ -239,8 +240,10 @@ def _sanitize_summary(text: str, max_chars: int) -> Tuple[str, bool, int]:
 def _generate_ai_summary(ticker: str, lang: str) -> Dict[str, Any]:
     """Load AI summary from stored file (placeholder for real generation)."""
     ensure_contracts(["ai_summaries"])
-    path = US_DIR / 'ai_summaries.json'
-    summaries = load_json_file(path, {})
+    summaries = _db_fetch_document("ai_summaries") or {}
+    if not summaries:
+        path = US_DIR / 'ai_summaries.json'
+        summaries = load_json_file(path, {})
     entry = summaries.get(ticker.upper())
     if not entry:
         return {}
@@ -433,6 +436,165 @@ def load_json_file(path: str, default=None):
         return default if default is not None else {}
 
 
+def _get_db_connection():
+    try:
+        return get_connection()
+    except Exception:
+        return None
+
+
+def _db_fetch_document(doc_type: str, lang: str = "na", model: str = "na") -> Dict[str, Any]:
+    conn = _get_db_connection()
+    if conn is None:
+        return {}
+    try:
+        row = conn.execute(
+            """
+            SELECT payload_json
+            FROM market_documents
+            WHERE doc_type = ? AND lang = ? AND model = ?
+            ORDER BY as_of_date DESC, updated_at DESC
+            LIMIT 1
+            """,
+            (doc_type, lang, model),
+        ).fetchone()
+        if not row:
+            return {}
+        payload = row["payload_json"] if isinstance(row, dict) or hasattr(row, "__getitem__") else None
+        if not payload:
+            return {}
+        return json.loads(payload)
+    except Exception:
+        return {}
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def _db_fetch_smart_money():
+    conn = _get_db_connection()
+    if conn is None:
+        return None
+    try:
+        run = conn.execute(
+            """
+            SELECT run_id, analysis_date, analysis_timestamp, summary_json
+            FROM market_smart_money_runs
+            ORDER BY analysis_date DESC, created_at DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        if not run:
+            return None
+        run_id = run["run_id"]
+        picks = conn.execute(
+            """
+            SELECT *
+            FROM market_smart_money_picks
+            WHERE run_id = ?
+            ORDER BY rank ASC
+            """,
+            (run_id,),
+        ).fetchall()
+        summary = {}
+        summary_json = run["summary_json"]
+        if summary_json:
+            try:
+                summary = json.loads(summary_json)
+            except Exception:
+                summary = {}
+        return {
+            "run": dict(run),
+            "picks": [dict(p) for p in picks],
+            "summary": summary,
+        }
+    except Exception:
+        return None
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def _db_fetch_smart_money_by_date(date_str: str):
+    conn = _get_db_connection()
+    if conn is None:
+        return None
+    try:
+        run = conn.execute(
+            """
+            SELECT run_id, analysis_date, analysis_timestamp, summary_json
+            FROM market_smart_money_runs
+            WHERE analysis_date = ?
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (date_str,),
+        ).fetchone()
+        if not run:
+            return None
+        run_id = run["run_id"]
+        picks = conn.execute(
+            """
+            SELECT *
+            FROM market_smart_money_picks
+            WHERE run_id = ?
+            ORDER BY rank ASC
+            """,
+            (run_id,),
+        ).fetchall()
+        summary = {}
+        summary_json = run["summary_json"]
+        if summary_json:
+            try:
+                summary = json.loads(summary_json)
+            except Exception:
+                summary = {}
+        return {
+            "run": dict(run),
+            "picks": [dict(p) for p in picks],
+            "summary": summary,
+        }
+    except Exception:
+        return None
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def _db_fetch_etf_flows():
+    conn = _get_db_connection()
+    if conn is None:
+        return None
+    try:
+        latest = conn.execute(
+            "SELECT MAX(as_of_date) AS as_of_date FROM market_etf_flows"
+        ).fetchone()
+        if not latest or not latest["as_of_date"]:
+            return None
+        as_of_date = latest["as_of_date"]
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM market_etf_flows
+            WHERE as_of_date = ?
+            """,
+            (as_of_date,),
+        ).fetchall()
+        return {"as_of_date": as_of_date, "rows": [dict(r) for r in rows]}
+    except Exception:
+        return None
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
 # ------------- Routes -------------
 @app.route('/')
 def index():
@@ -458,19 +620,43 @@ def status():
         data_dir = paths["data_dir"]
         run_state_path = paths["run_state"]
         stale_threshold_sec = STALE_THRESHOLD_MIN * 60
+        now = datetime.now(timezone.utc)
 
         def file_info(p: Path) -> Dict[str, any]:
             if not p.exists():
                 return {"path": str(p), "exists": False, "mtime": None, "age_sec": None, "size_bytes": None}
             stat = p.stat()
             mtime = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).astimezone()
-            age_sec = (datetime.now(timezone.utc) - mtime).total_seconds()
+            age_sec = (now - mtime).total_seconds()
             return {
                 "path": str(p),
                 "exists": True,
                 "mtime": mtime.isoformat(),
                 "age_sec": age_sec,
                 "size_bytes": stat.st_size,
+            }
+
+        def _parse_db_time(value: str) -> Optional[datetime]:
+            if not value:
+                return None
+            try:
+                if len(value) == 10:
+                    return datetime.strptime(value, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
+            except Exception:
+                return None
+
+        def db_info(label: str, updated_at: Optional[str]) -> Dict[str, any]:
+            dt = _parse_db_time(updated_at or "")
+            if not dt:
+                return {"path": f"db:{label}", "exists": False, "mtime": None, "age_sec": None, "size_bytes": None}
+            age_sec = (now - dt).total_seconds()
+            return {
+                "path": f"db:{label}",
+                "exists": True,
+                "mtime": dt.isoformat(),
+                "age_sec": age_sec,
+                "size_bytes": None,
             }
 
         modules = {
@@ -484,8 +670,44 @@ def status():
         modules_status = {}
         overall_ok = True
 
+        # Prefer DB timestamps if available
+        db_conn = _get_db_connection()
+        db_overrides: Dict[str, List[Dict[str, Any]]] = {}
+        if db_conn is not None:
+            try:
+                row = db_conn.execute("SELECT MAX(date) AS max_date FROM market_prices_daily").fetchone()
+                db_overrides["indices"] = [db_info("market_prices_daily", row["max_date"] if row else None)]
+                row = db_conn.execute(
+                    """
+                    SELECT analysis_date, analysis_timestamp
+                    FROM market_smart_money_runs
+                    ORDER BY analysis_date DESC, created_at DESC
+                    LIMIT 1
+                    """
+                ).fetchone()
+                ts = row["analysis_timestamp"] if row else None
+                db_overrides["smart_money"] = [db_info("market_smart_money_runs", ts or (row["analysis_date"] if row else None))]
+                row = db_conn.execute("SELECT MAX(as_of_date) AS max_date FROM market_etf_flows").fetchone()
+                db_overrides["etf"] = [db_info("market_etf_flows", row["max_date"] if row else None)]
+                row = db_conn.execute(
+                    """
+                    SELECT as_of_date, updated_at
+                    FROM market_documents
+                    WHERE doc_type = 'macro_analysis' AND lang = 'ko' AND model = 'gemini'
+                    ORDER BY as_of_date DESC, updated_at DESC
+                    LIMIT 1
+                    """
+                ).fetchone()
+                ts = row["updated_at"] if row else None
+                db_overrides["macro"] = [db_info("market_documents:macro_analysis", ts or (row["as_of_date"] if row else None))]
+            finally:
+                try:
+                    db_conn.close()
+                except Exception:
+                    pass
+
         for name, files in modules.items():
-            infos = [file_info(p) for p in files]
+            infos = db_overrides.get(name) or [file_info(p) for p in files]
             problems = []
             stale = False
             for info in infos:
@@ -668,6 +890,34 @@ def build_smart_money_from_analysis():
 @app.route('/api/us/smart-money')
 def get_us_smart_money():
     try:
+        db_payload = _db_fetch_smart_money()
+        if db_payload:
+            picks = []
+            for row in db_payload["picks"]:
+                ticker = row.get("ticker")
+                score = safe_float(row.get("composite_score"), 0)
+                picks.append({
+                    "ticker": ticker,
+                    "name": row.get("name", ticker),
+                    "sector": row.get("sector") or get_sector(ticker),
+                    "final_score": score,
+                    "composite_score": score,
+                    "current_price": safe_float(row.get("current_price"), 0),
+                    "price_at_rec": safe_float(row.get("price_at_rec", row.get("current_price")), 0),
+                    "change_since_rec": safe_float(row.get("change_since_rec"), 0),
+                    "target_upside": safe_float(row.get("target_upside"), 0),
+                    "grade": row.get("grade", grade_from_score(score)),
+                    "ai_recommendation": row.get("recommendation", "Hold"),
+                })
+            run = db_payload["run"]
+            summary = db_payload.get("summary") or {"total_analyzed": len(picks)}
+            return jsonify({
+                "analysis_date": run.get("analysis_date", ""),
+                "analysis_timestamp": run.get("analysis_timestamp", ""),
+                "top_picks": picks,
+                "summary": summary,
+            })
+
         ensure_contracts(["smart_money_current", "smart_money_csv", "us_volume", "us_stocks"])
         # Prefer tracked snapshot with performance
         current_file = US_DIR / 'smart_money_current.json'
@@ -727,12 +977,16 @@ def get_us_smart_money():
 @app.route('/api/us/etf-flows')
 def get_us_etf_flows():
     try:
-        ensure_contracts(["etf_flows", "etf_flow_analysis"])
-        csv_path = US_DIR / 'us_etf_flows.csv'
-        if not csv_path.exists():
-            return jsonify({'error': 'No ETF data'}), 404
+        db_data = _db_fetch_etf_flows()
+        if db_data and db_data.get("rows"):
+            df = pd.DataFrame(db_data["rows"])
+        else:
+            ensure_contracts(["etf_flows", "etf_flow_analysis"])
+            csv_path = US_DIR / 'us_etf_flows.csv'
+            if not csv_path.exists():
+                return jsonify({'error': 'No ETF data'}), 404
+            df = pd.read_csv(csv_path)
 
-        df = pd.read_csv(csv_path)
         df['flow_score'] = pd.to_numeric(df.get('flow_score', 0), errors='coerce').fillna(0)
 
         broad = df[df['category'].str.contains('Market', na=False)]
@@ -743,10 +997,14 @@ def get_us_etf_flows():
         sector_flows = df[df['category'].str.contains('Sector', na=False)].to_dict(orient='records')
 
         ai_analysis = ""
-        ai_path = US_DIR / 'etf_flow_analysis.json'
-        if ai_path.exists():
-            ai_json = load_json_file(ai_path, {})
-            ai_analysis = ai_json.get('analysis') or ai_json.get('ai_analysis', '')
+        ai_doc = _db_fetch_document("etf_flow_analysis")
+        if ai_doc:
+            ai_analysis = ai_doc.get("analysis") or ai_doc.get("ai_analysis", "")
+        else:
+            ai_path = US_DIR / 'etf_flow_analysis.json'
+            if ai_path.exists():
+                ai_json = load_json_file(ai_path, {})
+                ai_analysis = ai_json.get('analysis') or ai_json.get('ai_analysis', '')
 
         return jsonify({
             'market_sentiment_score': market_sentiment_score,
@@ -816,6 +1074,17 @@ def get_us_stock_chart(ticker):
 @app.route('/api/us/history-dates')
 def get_us_history_dates():
     try:
+        conn = _get_db_connection()
+        if conn is not None:
+            rows = conn.execute(
+                "SELECT DISTINCT analysis_date FROM market_smart_money_runs ORDER BY analysis_date DESC"
+            ).fetchall()
+            try:
+                conn.close()
+            except Exception:
+                pass
+            dates = [r["analysis_date"] for r in rows if r["analysis_date"]]
+            return jsonify({'dates': dates, 'count': len(dates)})
         history_dir = US_DIR / 'history'
         if not history_dir.exists():
             return jsonify({'dates': []})
@@ -833,6 +1102,32 @@ def get_us_history_dates():
 @app.route('/api/us/history/<date>')
 def get_us_history_by_date(date):
     try:
+        db_payload = _db_fetch_smart_money_by_date(date)
+        if db_payload:
+            picks = db_payload.get("picks", [])
+            tickers = [p.get("ticker") for p in picks if p.get("ticker")]
+            prices = fetch_price_map(tickers)
+            picks_with_perf = []
+            for pick in picks:
+                ticker = pick.get("ticker")
+                price_at_rec = safe_float(pick.get("price_at_rec"), 0)
+                cur_price = prices.get(ticker, price_at_rec)
+                change_pct = ((cur_price / price_at_rec - 1) * 100) if price_at_rec else 0
+                picks_with_perf.append({
+                    **pick,
+                    "sector": pick.get("sector") or get_sector(ticker),
+                    "current_price": round(cur_price, 2),
+                    "price_at_rec": round(price_at_rec, 2),
+                    "change_since_rec": round(change_pct, 2),
+                })
+            avg_perf = np.nanmean([p["change_since_rec"] for p in picks_with_perf]) if picks_with_perf else 0
+            run = db_payload["run"]
+            return jsonify({
+                "analysis_date": run.get("analysis_date", date),
+                "analysis_timestamp": run.get("analysis_timestamp", ""),
+                "top_picks": picks_with_perf,
+                "summary": {"total": len(picks_with_perf), "avg_performance": round(float(avg_perf), 2)},
+            })
         history_file = US_DIR / 'history' / f'picks_{date}.json'
         if not history_file.exists():
             return jsonify({'error': f'No analysis found for {date}'}), 404
@@ -874,7 +1169,13 @@ def get_us_macro_analysis():
     try:
         lang = request.args.get('lang', 'ko')
         model = request.args.get('model', 'gemini')
-        ensure_contracts(["macro", "macro_en", "macro_gpt", "macro_gpt_en"])
+        doc_model = "gpt" if model == "gpt" else "gemini"
+        doc_lang = "en" if lang == "en" else "ko"
+        db_doc = _db_fetch_document("macro_analysis", lang=doc_lang, model=doc_model)
+        if not db_doc and doc_model == "gpt":
+            db_doc = _db_fetch_document("macro_analysis", lang=doc_lang, model="gemini")
+        if not db_doc:
+            ensure_contracts(["macro", "macro_en", "macro_gpt", "macro_gpt_en"])
 
         # Determine file path based on model/lang
         if model == 'gpt':
@@ -886,7 +1187,7 @@ def get_us_macro_analysis():
         if not analysis_path.exists():
             analysis_path = US_DIR / 'macro_analysis.json'
 
-        cached = load_json_file(analysis_path, {})
+        cached = db_doc or load_json_file(analysis_path, {})
         macro_indicators = cached.get('macro_indicators', {})
         ai_analysis = cached.get('ai_analysis', 'Run macro_analyzer.py to refresh analysis.')
 
@@ -951,6 +1252,9 @@ def get_us_macro_analysis():
 @app.route('/api/us/sector-heatmap')
 def get_us_sector_heatmap():
     try:
+        db_doc = _db_fetch_document("sector_heatmap")
+        if db_doc:
+            return jsonify(db_doc)
         ensure_contracts(["heatmap"])
         path = US_DIR / 'sector_heatmap.json'
         if path.exists():
@@ -1058,6 +1362,12 @@ def _compute_top_movers(window: str, limit: int) -> Tuple[List[Dict[str, Any]], 
     except Exception as e:
         errors.append(str(e))
         return [], [], rows_read, updated_at, errors
+    finally:
+        try:
+            if db_conn is not None:
+                db_conn.close()
+        except Exception:
+            pass
 
 
 def _load_sector_map() -> Dict[str, str]:
@@ -1272,7 +1582,7 @@ def get_us_options_flow():
             "volume_large": OPT_VOLUME_LARGE,
             "iv_high": OPT_IV_HIGH,
         }
-        raw = load_options_raw(path)
+        raw = _db_fetch_document("options_flow") or load_options_raw(path)
         scored = score_options_flow(raw.get("options_flow") or [], path, cfg)
         # Attach scored data while keeping original shape keys if present
         payload = {
@@ -1288,7 +1598,7 @@ def get_us_options_flow():
 
 def _load_scored_options(cfg: Dict[str, float]) -> Tuple[List[Dict[str, Any]], Dict[str, Any], Path]:
     path = US_DIR / 'options_flow.json'
-    raw = load_options_raw(path)
+    raw = _db_fetch_document("options_flow") or load_options_raw(path)
     scored = score_options_flow(raw.get("options_flow") or [], path, cfg)
     return scored, raw, path
 
@@ -1631,6 +1941,9 @@ def get_realtime_prices():
 @app.route('/api/us/calendar')
 def get_us_calendar():
     try:
+        db_doc = _db_fetch_document("calendar")
+        if db_doc:
+            return jsonify(db_doc)
         ensure_contracts(["calendar"])
         calendar_path = US_DIR / 'weekly_calendar.json'
         if calendar_path.exists():
