@@ -9,23 +9,38 @@ Supports dual-write to CSV and SQLite for backtesting
 import os
 import sys
 import sqlite3
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 import pandas as pd
 import numpy as np
 import logging
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 from tqdm import tqdm
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.append(str(ROOT_DIR))
 
-from utils.fmp_client import get_fmp_client
+from utils.fmp_client import get_fmp_client, FMPClient
 from utils.symbols import to_fmp_symbol
+
+# Thread-local FMP client to keep requests.Session isolated per worker.
+_THREAD_LOCAL = threading.local()
+
+
+def _get_thread_fmp_client() -> FMPClient:
+    client = getattr(_THREAD_LOCAL, "client", None)
+    if client is None:
+        client = FMPClient()
+        _THREAD_LOCAL.client = client
+    return client
 
 # SQLite toggle - dual-write enabled by default for DB transition
 USE_SQLITE = os.getenv('USE_SQLITE', 'true').lower() == 'true'
+# PostgreSQL toggle - enabled by default
+USE_POSTGRES = os.getenv('USE_POSTGRES', 'true').lower() == 'true'
 
 # Logging Configuration
 logging.basicConfig(
@@ -40,6 +55,7 @@ class USStockDailyPricesCreator:
         self.data_dir = data_dir or os.getenv('DATA_DIR', '.')
         self.output_dir = self.data_dir
         os.makedirs(self.output_dir, exist_ok=True)
+        self.write_csv = os.getenv("WRITE_CSV", "true").lower() == "true"
         
         # Data file paths
         self.prices_file = os.path.join(self.output_dir, 'us_daily_prices.csv')
@@ -55,6 +71,16 @@ class USStockDailyPricesCreator:
         # Start date for historical data
         self.start_date = datetime(2020, 1, 1)
         self.end_date = datetime.now()
+        self._fmp_error_logged = False
+        self._fmp_error_lock = threading.Lock()
+
+    def _log_fmp_error_once(self, ticker: str, error_msg: str) -> None:
+        """Log a single FMP error sample to avoid noisy output."""
+        with self._fmp_error_lock:
+            if self._fmp_error_logged:
+                return
+            logger.warning(f"⚠️ FMP API error sample for {ticker}: {error_msg}")
+            self._fmp_error_logged = True
         
     def get_sp500_tickers(self) -> List[Dict]:
         """Get full S&P 500 tickers list"""
@@ -157,7 +183,9 @@ class USStockDailyPricesCreator:
         return stocks_df
     
     def load_existing_prices(self) -> pd.DataFrame:
-        """Load existing price data"""
+        """Load existing price data from CSV (used for merge/output)."""
+        if not self.write_csv:
+            return pd.DataFrame()
         if os.path.exists(self.prices_file):
             logger.info(f"📂 Loading existing prices: {self.prices_file}")
             df = pd.read_csv(self.prices_file)
@@ -168,6 +196,24 @@ class USStockDailyPricesCreator:
                 df = df.dropna(subset=['date'])
             return df
         return pd.DataFrame()
+
+    def _get_latest_dates_pg(self, tickers: Optional[List[str]] = None) -> Dict[str, datetime]:
+        """Fetch latest date per ticker from PostgreSQL to avoid full table scans."""
+        try:
+            from utils.data_access import get_latest_prices
+            logger.info("📂 Fetching latest price dates from PostgreSQL...")
+            df = get_latest_prices(tickers=tickers)
+            if df.empty:
+                logger.info("   PostgreSQL returned 0 rows for latest prices")
+                return {}
+            df['date'] = pd.to_datetime(df['date'], errors='coerce')
+            df = df.dropna(subset=['date'])
+            latest = df.set_index('ticker')['date'].to_dict()
+            logger.info(f"   Loaded {len(latest)} latest dates from PostgreSQL")
+            return latest
+        except Exception as e:
+            logger.warning(f"PostgreSQL latest-date fetch failed: {e}")
+            return {}
     
     def get_latest_dates(self, df: pd.DataFrame) -> Dict[str, datetime]:
         """Get latest date for each ticker"""
@@ -175,10 +221,15 @@ class USStockDailyPricesCreator:
             return {}
         return df.groupby('ticker')['date'].max().to_dict()
     
-    def download_stock_data(self, ticker: str, start_date: datetime, end_date: datetime) -> pd.DataFrame:
+    def download_stock_data(
+        self,
+        ticker: str,
+        start_date: datetime,
+        end_date: datetime
+    ) -> Tuple[pd.DataFrame, str]:
         """Download daily price data for a single stock"""
         try:
-            fmp = get_fmp_client()
+            fmp = _get_thread_fmp_client()
             fmp_symbol = to_fmp_symbol(ticker)
             data = fmp.historical_price_full(
                 fmp_symbol,
@@ -186,9 +237,15 @@ class USStockDailyPricesCreator:
                 to_date=end_date.strftime("%Y-%m-%d"),
             )
 
+            if isinstance(data, dict):
+                error_msg = data.get("Error Message") or data.get("error") or data.get("message")
+                if error_msg:
+                    self._log_fmp_error_once(ticker, error_msg)
+                    return pd.DataFrame(), "error"
+
             hist_list = data.get("historical", []) if isinstance(data, dict) else []
             if not hist_list:
-                return pd.DataFrame()
+                return pd.DataFrame(), "empty"
 
             hist = pd.DataFrame(hist_list)
             hist = hist.rename(columns={
@@ -211,11 +268,11 @@ class USStockDailyPricesCreator:
             cols = ['ticker', 'date', 'open', 'high', 'low', 'current_price', 'volume', 'change', 'change_rate']
             hist = hist[cols]
 
-            return hist
+            return hist, "ok"
             
         except Exception as e:
             logger.debug(f"⚠️ Failed to download {ticker}: {e}")
-            return pd.DataFrame()
+            return pd.DataFrame(), "error"
     
     def _get_db_connection(self) -> Optional[sqlite3.Connection]:
         """Get SQLite connection with proper settings (returns None if not using SQLite)"""
@@ -287,6 +344,65 @@ class USStockDailyPricesCreator:
                 conn.close()
             except:
                 pass
+            return 0
+    
+    def _save_to_pg(self, df: pd.DataFrame) -> int:
+        """
+        Save price data to PostgreSQL database (dual-write).
+        Falls back gracefully if DB is unavailable.
+        
+        Args:
+            df: DataFrame with price data
+            
+        Returns:
+            Number of rows inserted (0 if failed or disabled)
+        """
+        if not USE_POSTGRES or df.empty:
+            return 0
+        
+        try:
+            from utils.db_writer_pg import get_db_writer
+            writer = get_db_writer()
+            
+            # Transform to expected format
+            records = []
+            for _, row in df.iterrows():
+                records.append({
+                    "symbol": row.get('ticker'),
+                    "date": str(row.get('date'))[:10],
+                    "open": row.get('open'),
+                    "high": row.get('high'),
+                    "low": row.get('low'),
+                    "close": row.get('current_price'),
+                    "adj_close": row.get('current_price'),
+                    "volume": row.get('volume'),
+                    "change": row.get('change'),
+                    "change_pct": row.get('change_rate'),
+                    "source": "FMP",
+                })
+            
+            # Use schema-qualified insert
+            query = """
+                INSERT INTO market.daily_prices (symbol, date, open, high, low, close, adj_close, volume, change, change_pct, source, ingested_at)
+                VALUES (%(symbol)s, %(date)s, %(open)s, %(high)s, %(low)s, %(close)s, %(adj_close)s, %(volume)s, %(change)s, %(change_pct)s, %(source)s, NOW())
+                ON CONFLICT (symbol, date) DO UPDATE SET
+                    open = EXCLUDED.open,
+                    high = EXCLUDED.high,
+                    low = EXCLUDED.low,
+                    close = EXCLUDED.close,
+                    adj_close = EXCLUDED.adj_close,
+                    volume = EXCLUDED.volume,
+                    change = EXCLUDED.change,
+                    change_pct = EXCLUDED.change_pct,
+                    ingested_at = NOW()
+            """
+            
+            affected = writer._execute_batch(query, records)
+            logger.info(f"🐘 PostgreSQL: Saved {affected} rows to market.daily_prices")
+            return affected
+            
+        except Exception as e:
+            logger.warning(f"⚠️ PostgreSQL save failed (CSV still saved): {e}")
             return 0
     
     def _save_universe_to_db(self, stocks_df: pd.DataFrame, date_str: str) -> int:
@@ -398,18 +514,36 @@ class USStockDailyPricesCreator:
             self._save_universe_to_db(stocks_df, today_str)  # Dual-write to SQLite
             
             # 2. Load existing data
-            existing_df = pd.DataFrame() if full_refresh else self.load_existing_prices()
-            latest_dates = self.get_latest_dates(existing_df)
+            existing_df = pd.DataFrame()
+            latest_dates: Dict[str, datetime] = {}
+            if not full_refresh:
+                if USE_POSTGRES:
+                    latest_dates = self._get_latest_dates_pg(
+                        tickers=stocks_df['ticker'].astype(str).tolist()
+                    )
+                if self.write_csv:
+                    existing_df = self.load_existing_prices()
+                    if not latest_dates:
+                        latest_dates = self.get_latest_dates(existing_df)
+                elif not latest_dates:
+                    logger.info("📂 PostgreSQL returned no latest dates; running full refresh.")
             
             # 3. Determine target end date
             now = datetime.now()
-            target_end_date = now
+            target_end_date = now - timedelta(days=1)
             
             # 4. Collect data
             all_new_data = []
             failed_tickers = []
+            skipped_tickers = []
+            updated_tickers = []
             
-            for idx, row in tqdm(stocks_df.iterrows(), desc="Downloading US stocks", total=len(stocks_df)):
+            download_workers = int(os.getenv("FMP_DOWNLOAD_WORKERS", "4"))
+            if download_workers < 1:
+                download_workers = 1
+            
+            tasks = []
+            for _, row in stocks_df.iterrows():
                 ticker = row['ticker']
                 
                 # Determine start date
@@ -419,62 +553,107 @@ class USStockDailyPricesCreator:
                     start_date = self.start_date
                 
                 # Skip if already up to date
-                if start_date >= target_end_date:
+                if start_date > target_end_date:
                     continue
                 
-                # Download data
-                new_data = self.download_stock_data(ticker, start_date, target_end_date)
-                
-                if not new_data.empty:
-                    # Add name from stock list
-                    new_data['name'] = row['name']
-                    new_data['market'] = row['market']
-                    all_new_data.append(new_data)
-                else:
-                    failed_tickers.append(ticker)
+                tasks.append((ticker, row['name'], row['market'], start_date, target_end_date))
+            
+            if download_workers > 1 and len(tasks) > 1:
+                logger.info(f"⚡ Using {download_workers} download workers for FMP requests")
+                with ThreadPoolExecutor(max_workers=download_workers) as executor:
+                    future_map = {
+                        executor.submit(self.download_stock_data, t, s, e): (t, name, market)
+                        for t, name, market, s, e in tasks
+                    }
+                    for future in tqdm(as_completed(future_map), total=len(future_map), desc="Downloading US stocks"):
+                        ticker, name, market = future_map[future]
+                        try:
+                            new_data, status = future.result()
+                        except Exception as e:
+                            logger.debug(f"🔁 Download failed for {ticker}: {e}")
+                            failed_tickers.append(ticker)
+                            continue
+                        
+                        if status == "ok" and not new_data.empty:
+                            new_data['name'] = name
+                            new_data['market'] = market
+                            all_new_data.append(new_data)
+                            updated_tickers.append(ticker)
+                        elif status == "empty":
+                            skipped_tickers.append(ticker)
+                        else:
+                            failed_tickers.append(ticker)
+            else:
+                for ticker, name, market, start_date, end_date in tqdm(
+                    tasks, desc="Downloading US stocks", total=len(tasks)
+                ):
+                    new_data, status = self.download_stock_data(ticker, start_date, end_date)
+                    
+                    if status == "ok" and not new_data.empty:
+                        new_data['name'] = name
+                        new_data['market'] = market
+                        all_new_data.append(new_data)
+                        updated_tickers.append(ticker)
+                    elif status == "empty":
+                        skipped_tickers.append(ticker)
+                    else:
+                        failed_tickers.append(ticker)
             
             # 5. Combine and save
             if all_new_data:
                 new_df = pd.concat(all_new_data, ignore_index=True)
                 
-                if not existing_df.empty:
-                    final_df = pd.concat([existing_df, new_df])
-                    final_df = final_df.drop_duplicates(subset=['ticker', 'date'], keep='last')
-                else:
-                    final_df = new_df
-                
-                # Normalize dates, sort, and save
-                final_df['date'] = pd.to_datetime(final_df['date'], errors='coerce')
-                invalid_dates = final_df['date'].isna().sum()
-                if invalid_dates:
-                    logger.warning(f"Dropped {invalid_dates} rows with invalid dates before saving")
-                    final_df = final_df.dropna(subset=['date'])
+                if self.write_csv:
+                    if not existing_df.empty:
+                        final_df = pd.concat([existing_df, new_df])
+                        final_df = final_df.drop_duplicates(subset=['ticker', 'date'], keep='last')
+                    else:
+                        final_df = new_df
+                    
+                    # Normalize dates, sort, and save
+                    final_df['date'] = pd.to_datetime(final_df['date'], errors='coerce')
+                    invalid_dates = final_df['date'].isna().sum()
+                    if invalid_dates:
+                        logger.warning(f"Dropped {invalid_dates} rows with invalid dates before saving")
+                        final_df = final_df.dropna(subset=['date'])
 
-                final_df = final_df.sort_values(['ticker', 'date']).reset_index(drop=True)
-                final_df['date'] = final_df['date'].dt.strftime('%Y-%m-%d')
-                final_df.to_csv(self.prices_file, index=False)
+                    final_df = final_df.sort_values(['ticker', 'date']).reset_index(drop=True)
+                    final_df['date'] = final_df['date'].dt.strftime('%Y-%m-%d')
+                    final_df.to_csv(self.prices_file, index=False)
                 
                 # Dual-write to SQLite if enabled
                 self._save_to_db(new_df)
                 
-                logger.info(f"✅ Saved {len(new_df)} new records to {self.prices_file}")
-                logger.info(f"📊 Total records: {len(final_df)}")
+                # Dual-write to PostgreSQL if enabled
+                self._save_to_pg(new_df)
+                
+                if self.write_csv:
+                    logger.info(f"✅ Saved {len(new_df)} new records to {self.prices_file}")
+                    logger.info(f"📊 Total records: {len(final_df)}")
             else:
-                if not os.path.exists(self.prices_file):
+                if tasks and len(failed_tickers) == len(tasks):
+                    logger.error("❌ No data fetched from FMP. All requests failed. Check API key/plan/limits.")
+                elif tasks and not failed_tickers:
+                    logger.info("✨ All data is up to date (no new data in requested range).")
+                if self.write_csv and not os.path.exists(self.prices_file):
                     cols = ['ticker', 'date', 'open', 'high', 'low', 'current_price', 'volume', 'change', 'change_rate']
                     pd.DataFrame(columns=cols).to_csv(self.prices_file, index=False)
                     logger.warning(f"⚠️ No data collected; created empty file at {self.prices_file}")
-                else:
+                elif not tasks:
                     logger.info("✨ All data is up to date!")
             
             # 6. Summary
             logger.info(f"\n📊 Collection Summary:")
             logger.info(f"   Total stocks: {len(stocks_df)}")
-            logger.info(f"   Success: {len(stocks_df) - len(failed_tickers)}")
+            logger.info(f"   Attempted: {len(tasks)}")
+            logger.info(f"   Updated: {len(updated_tickers)}")
+            logger.info(f"   Skipped (no new data): {len(skipped_tickers)}")
             logger.info(f"   Failed: {len(failed_tickers)}")
             
             if failed_tickers[:10]:
                 logger.warning(f"   Failed samples: {failed_tickers[:10]}")
+            if skipped_tickers[:10]:
+                logger.info(f"   Skipped samples: {skipped_tickers[:10]}")
             
             return True
             
@@ -496,10 +675,10 @@ def main():
     success = creator.run(full_refresh=args.full)
     
     if success:
-        print("\n🎉 US Stock Daily Prices collection completed!")
-        print(f"📁 File location: ./us_daily_prices.csv")
+        print("\nUS Stock Daily Prices collection completed!")
+        print("Primary store: PostgreSQL")
     else:
-        print("\n❌ Collection failed.")
+        print("\nCollection failed.")
 
 
 if __name__ == "__main__":

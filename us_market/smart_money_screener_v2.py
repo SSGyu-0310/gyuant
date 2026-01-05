@@ -36,6 +36,9 @@ if str(ROOT_DIR) not in sys.path:
 from utils.fmp_client import FMPClient
 from utils.symbols import to_fmp_symbol
 
+# PostgreSQL toggle
+USE_POSTGRES = os.getenv('USE_POSTGRES', 'true').lower() == 'true'
+
 # Logging Configuration
 logging.basicConfig(
     level=logging.INFO,
@@ -56,6 +59,35 @@ class PriceStore:
         self._load()
 
     def _load(self) -> None:
+        # Try PostgreSQL first
+        if USE_POSTGRES:
+            try:
+                from utils.data_access import get_prices
+                logger.info("PriceStore: loading from PostgreSQL...")
+                df = get_prices()
+                if not df.empty:
+                    df['date'] = pd.to_datetime(df['date'], errors='coerce')
+                    # Map 'close' to 'current_price' for compatibility
+                    if 'close' in df.columns and 'current_price' not in df.columns:
+                        df['current_price'] = df['close']
+                    df = df.dropna(subset=['date', 'ticker'])
+                    df['ticker'] = df['ticker'].astype('category')
+                    if 'name' in df.columns:
+                        df['name'] = df['name'].astype('category')
+                    # Keep only recent window
+                    cutoff = pd.Timestamp(datetime.utcnow().date() - timedelta(days=self.lookback_days + 10))
+                    df = df[df['date'] >= cutoff]
+                    df = df.sort_values(['ticker', 'date'])
+                    self.has_spy = (df['ticker'] == 'SPY').any()
+                    self.df = df
+                    self.loaded = True
+                    logger.info("PriceStore: loaded %d rows (%d tickers) from PostgreSQL", len(df), df['ticker'].nunique())
+                    return
+                logger.info("PriceStore: PostgreSQL empty, falling back to CSV")
+            except Exception as exc:
+                logger.warning("PriceStore: PostgreSQL load failed: %s, falling back to CSV", exc)
+        
+        # CSV Fallback
         price_file = self.data_dir / "us_daily_prices.csv"
         if not price_file.exists():
             logger.warning("PriceStore: local price file not found: %s", price_file)

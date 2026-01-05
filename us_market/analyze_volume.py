@@ -6,6 +6,7 @@ Calculates OBV, Accumulation/Distribution Line, Volume Surge Detection
 """
 
 import os
+import sys
 import pandas as pd
 import numpy as np
 import logging
@@ -15,8 +16,16 @@ from tqdm import tqdm
 from pathlib import Path
 from dotenv import load_dotenv
 
-# Load .env located at repo root (one level up from this script)
-load_dotenv(dotenv_path=Path(__file__).resolve().parent.parent / ".env")
+# Add parent directory for imports
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+# Load .env located at repo root
+load_dotenv(dotenv_path=ROOT_DIR / ".env")
+
+# PostgreSQL toggle
+USE_POSTGRES = os.getenv('USE_POSTGRES', 'true').lower() == 'true'
 
 # Logging Configuration
 logging.basicConfig(
@@ -35,7 +44,31 @@ class VolumeAnalyzer:
         self.output_file = os.path.join(self.data_dir, 'us_volume_analysis.csv')
         
     def load_prices(self) -> pd.DataFrame:
-        """Load daily price data"""
+        """Load daily price data from PostgreSQL or CSV"""
+        if USE_POSTGRES:
+            try:
+                from utils.data_access import get_prices
+                logger.info("📂 Loading prices (PostgreSQL preferred)...")
+                df, source, fallback_reason = get_prices(return_meta=True)
+                if not df.empty:
+                    df['date'] = pd.to_datetime(df['date'], errors='coerce')
+                    # Ensure current_price for downstream compatibility
+                    if 'close' in df.columns and 'current_price' not in df.columns:
+                        df['current_price'] = df['close']
+                    if source == "postgres":
+                        logger.info(f"   Loaded {len(df)} rows from PostgreSQL")
+                    else:
+                        msg = f"   Loaded {len(df)} rows from CSV"
+                        if fallback_reason:
+                            msg += f" ({fallback_reason})"
+                        logger.info(msg)
+                    return df
+                if fallback_reason:
+                    logger.warning(f"{fallback_reason}. Falling back to CSV.")
+            except Exception as e:
+                logger.warning(f"PostgreSQL load failed: {e}, falling back to CSV")
+        
+        # CSV Fallback
         if not os.path.exists(self.prices_file):
             raise FileNotFoundError(f"Price file not found: {self.prices_file}")
         
@@ -46,7 +79,74 @@ class VolumeAnalyzer:
         if invalid_dates:
             logger.warning(f"Dropped {invalid_dates} rows with invalid dates")
             df = df.dropna(subset=['date'])
+        if 'current_price' not in df.columns and 'close' in df.columns:
+            df['current_price'] = df['close']
         return df
+    
+    def _save_to_pg(self, results_df: pd.DataFrame) -> int:
+        """
+        Save volume analysis results to PostgreSQL factors.volume_analysis
+        """
+        if results_df.empty:
+            return 0
+        
+        try:
+            from utils.db_writer_pg import get_db_writer
+            writer = get_db_writer()
+            
+            today = datetime.now().strftime("%Y-%m-%d")
+            
+            records = []
+            for _, row in results_df.iterrows():
+                records.append({
+                    "ticker": row.get('ticker'),
+                    "as_of_date": today,
+                    "name": row.get('name'),
+                    "obv": row.get('obv') if pd.notna(row.get('obv')) else None,
+                    "obv_change_20d": row.get('obv_change_20d') if pd.notna(row.get('obv_change_20d')) else None,
+                    "ad_line": row.get('ad_line') if pd.notna(row.get('ad_line')) else None,
+                    "ad_change_20d": row.get('ad_change_20d') if pd.notna(row.get('ad_change_20d')) else None,
+                    "mfi": row.get('mfi') if pd.notna(row.get('mfi')) else None,
+                    "vol_ratio_5d_20d": row.get('vol_ratio_5d_20d') if pd.notna(row.get('vol_ratio_5d_20d')) else None,
+                    "surge_count_5d": int(row.get('surge_count_5d')) if pd.notna(row.get('surge_count_5d')) else None,
+                    "surge_count_20d": int(row.get('surge_count_20d')) if pd.notna(row.get('surge_count_20d')) else None,
+                    "supply_demand_score": row.get('supply_demand_score') if pd.notna(row.get('supply_demand_score')) else None,
+                    "supply_demand_stage": row.get('supply_demand_stage'),
+                    "source": "analyze_volume",
+                })
+            
+            query = """
+                INSERT INTO factors.volume_analysis (
+                    ticker, as_of_date, name, obv, obv_change_20d, ad_line, ad_change_20d,
+                    mfi, vol_ratio_5d_20d, surge_count_5d, surge_count_20d,
+                    supply_demand_score, supply_demand_stage, source, ingested_at
+                ) VALUES (
+                    %(ticker)s, %(as_of_date)s, %(name)s, %(obv)s, %(obv_change_20d)s, %(ad_line)s, %(ad_change_20d)s,
+                    %(mfi)s, %(vol_ratio_5d_20d)s, %(surge_count_5d)s, %(surge_count_20d)s,
+                    %(supply_demand_score)s, %(supply_demand_stage)s, %(source)s, NOW()
+                )
+                ON CONFLICT (ticker, as_of_date) DO UPDATE SET
+                    name = EXCLUDED.name,
+                    obv = EXCLUDED.obv,
+                    obv_change_20d = EXCLUDED.obv_change_20d,
+                    ad_line = EXCLUDED.ad_line,
+                    ad_change_20d = EXCLUDED.ad_change_20d,
+                    mfi = EXCLUDED.mfi,
+                    vol_ratio_5d_20d = EXCLUDED.vol_ratio_5d_20d,
+                    surge_count_5d = EXCLUDED.surge_count_5d,
+                    surge_count_20d = EXCLUDED.surge_count_20d,
+                    supply_demand_score = EXCLUDED.supply_demand_score,
+                    supply_demand_stage = EXCLUDED.supply_demand_stage,
+                    ingested_at = NOW()
+            """
+            
+            affected = writer._execute_batch(query, records)
+            logger.info(f"🐘 PostgreSQL: Saved {affected} rows to factors.volume_analysis")
+            return affected
+            
+        except Exception as e:
+            logger.warning(f"⚠️ PostgreSQL save failed: {e}")
+            return 0
     
     def calculate_obv(self, df: pd.DataFrame) -> pd.Series:
         """
@@ -268,9 +368,13 @@ class VolumeAnalyzer:
         if results_df.empty:
             results_df = pd.DataFrame(columns=output_cols)
         
-        # Save results
+        # Save to CSV
         results_df.to_csv(self.output_file, index=False)
         logger.info(f"✅ Analysis complete! Saved to {self.output_file}")
+        
+        # Save to PostgreSQL if enabled
+        if USE_POSTGRES:
+            self._save_to_pg(results_df)
         
         # Print summary
         logger.info("\n📊 Summary:")
