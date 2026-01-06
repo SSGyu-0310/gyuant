@@ -6,11 +6,20 @@ Combines quant scores with AI analysis for final recommendations
 """
 
 import os
+import sys
 import json
 import logging
 import pandas as pd
 from datetime import datetime
 from typing import Dict, List
+from pathlib import Path
+
+# Add parent directory to path for imports
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.append(str(ROOT_DIR))
+
+from utils.db_writer import get_db_connection, fetch_latest_document, write_market_documents
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -28,24 +37,51 @@ class FinalReportGenerator:
         """Generate final report"""
         logger.info(f"📊 Generating Final Top {top_n} Report...")
         
-        # Load Quant Data
-        quant_path = os.path.join(self.data_dir, 'smart_money_picks_v2.csv')
-        if not os.path.exists(quant_path):
-            logger.warning("⚠️ smart_money_picks_v2.csv not found")
+        # Load Quant Data from SQLite
+        conn = get_db_connection()
+        if conn is None:
+            logger.warning("⚠️ SQLite connection unavailable")
+            return {'error': 'SQLite connection unavailable'}
+        try:
+            run_row = conn.execute(
+                """
+                SELECT run_id
+                FROM market_smart_money_runs
+                ORDER BY analysis_date DESC, created_at DESC
+                LIMIT 1
+                """
+            ).fetchone()
+            if not run_row:
+                logger.warning("⚠️ smart money runs not found in SQLite")
+                return {'error': 'Quant data not found'}
+            run_id = run_row["run_id"]
+            df = pd.read_sql_query(
+                """
+                SELECT *
+                FROM market_smart_money_picks
+                WHERE run_id = ?
+                ORDER BY rank ASC
+                """,
+                conn,
+                params=[run_id],
+            )
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+        if df.empty:
+            logger.warning("⚠️ Smart money picks are empty in SQLite")
             return {'error': 'Quant data not found'}
+        logger.info("📂 Loaded %d stocks from SQLite quant screening", len(df))
         
-        df = pd.read_csv(quant_path)
-        logger.info(f"📂 Loaded {len(df)} stocks from quant screening")
-        
-        # Load AI Summaries
-        ai_path = os.path.join(self.data_dir, 'ai_summaries.json')
-        ai_data = {}
-        if os.path.exists(ai_path):
-            with open(ai_path, 'r', encoding='utf-8') as f:
-                ai_data = json.load(f)
-            logger.info(f"📂 Loaded {len(ai_data)} AI summaries")
+        # Load AI Summaries from SQLite (export JSON is output-only)
+        ai_data = fetch_latest_document("ai_summaries") or {}
+        if ai_data:
+            logger.info("📂 Loaded %d AI summaries from SQLite", len(ai_data))
         else:
-            logger.warning("⚠️ AI summaries not found. Using quant data only.")
+            logger.warning("⚠️ AI summaries not found in SQLite. Using quant data only.")
         
         # Process and score
         results = []
@@ -129,6 +165,11 @@ class FinalReportGenerator:
         with open(self.output_file, 'w', encoding='utf-8') as f:
             json.dump(output, f, indent=2, ensure_ascii=False)
         logger.info(f"✅ Saved report to {self.output_file}")
+        write_market_documents(
+            "final_top10_report",
+            output,
+            as_of_date=output.get("timestamp", "")[:10],
+        )
         
         # Save dashboard-friendly version
         dashboard_output = {
@@ -139,6 +180,11 @@ class FinalReportGenerator:
         with open(self.dashboard_file, 'w', encoding='utf-8') as f:
             json.dump(dashboard_output, f, indent=2, ensure_ascii=False)
         logger.info(f"✅ Saved dashboard data to {self.dashboard_file}")
+        write_market_documents(
+            "smart_money_current",
+            dashboard_output,
+            as_of_date=output.get("timestamp", "")[:10],
+        )
         
         return output
     

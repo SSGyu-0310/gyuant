@@ -21,6 +21,7 @@ if str(ROOT_DIR) not in sys.path:
 
 from utils.fmp_client import get_fmp_client
 from utils.symbols import to_fmp_symbol
+from utils.db_writer import write_market_documents
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -225,6 +226,11 @@ class PortfolioRiskAnalyzer:
             with open(self.output_file, 'w') as f:
                 json.dump(result, f, indent=2)
             logger.info(f"✅ Saved to {self.output_file}")
+            write_market_documents(
+                "portfolio_risk",
+                result,
+                as_of_date=result.get("as_of_date") if isinstance(result, dict) else None,
+            )
             
             return result
             

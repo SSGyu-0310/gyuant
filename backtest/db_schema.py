@@ -14,7 +14,7 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 # Database filename
-DB_FILENAME = "gyuant_market.db"
+DB_FILENAME = "gyuant.db"
 
 
 def get_db_path() -> Path:

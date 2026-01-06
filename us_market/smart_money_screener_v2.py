@@ -12,6 +12,7 @@ Comprehensive analysis combining:
 
 import os
 import sys
+import json
 from pathlib import Path
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -35,6 +36,7 @@ load_env()
 
 from utils.fmp_client import FMPClient
 from utils.symbols import to_fmp_symbol
+from utils.db_writer import get_db_connection
 
 # PostgreSQL toggle
 USE_POSTGRES = os.getenv('USE_POSTGRES', 'true').lower() == 'true'
@@ -93,61 +95,65 @@ class PriceStore:
             logger.warning("PriceStore: local price file not found: %s", price_file)
             return
         try:
-            usecols = [
-                "ticker",
-                "date",
-                "open",
-                "high",
-                "low",
-                "current_price",
-                "volume",
-                "name",
-            ]
-            dtype = {
-                "ticker": "category",
-                "name": "category",
-                "open": "float64",
-                "high": "float64",
-                "low": "float64",
-                "current_price": "float64",
-                "volume": "Int64",
-            }
-            df = pd.read_csv(price_file, usecols=lambda c: c in usecols, dtype={k: v for k, v in dtype.items() if k != "volume"})
+            cutoff = (datetime.utcnow().date() - timedelta(days=self.lookback_days + 10)).isoformat()
+            query = """
+                SELECT
+                    p.ticker,
+                    p.date,
+                    p.open,
+                    p.high,
+                    p.low,
+                    p.close AS current_price,
+                    p.volume,
+                    s.name
+                FROM market_prices_daily p
+                LEFT JOIN market_stocks s ON p.ticker = s.ticker
+                WHERE p.date >= ?
+            """
+            df = pd.read_sql_query(query, conn, params=[cutoff])
             if df.empty:
-                logger.warning("PriceStore: local price file is empty: %s", price_file)
+                logger.warning("PriceStore: market_prices_daily is empty")
                 return
             if "date" not in df.columns or "ticker" not in df.columns:
-                logger.warning("PriceStore: required columns missing in %s", price_file)
+                logger.warning("PriceStore: required columns missing in market_prices_daily")
                 return
             df["date"] = pd.to_datetime(df["date"], errors="coerce")
             df = df.dropna(subset=["date", "ticker"])
             df["ticker"] = df["ticker"].astype("category")
             if "name" in df.columns:
                 df["name"] = df["name"].astype("category")
+            dtype = {
+                "open": "float64",
+                "high": "float64",
+                "low": "float64",
+                "current_price": "float64",
+                "volume": "Int64",
+            }
             for col in ("open", "high", "low", "current_price", "volume"):
                 if col in df.columns:
                     try:
                         df[col] = df[col].astype(dtype.get(col, "float64"))
                     except Exception:
                         df[col] = pd.to_numeric(df[col], errors="coerce")
-            # Keep only recent window to save memory
-            cutoff = pd.Timestamp(datetime.utcnow().date() - timedelta(days=self.lookback_days + 10))
-            df = df[df["date"] >= cutoff]
             df = df.sort_values(["ticker", "date"])
             self.has_spy = (df["ticker"] == "SPY").any()
             self.df = df
             self.loaded = True
             logger.info(
-                "PriceStore: loaded %d rows (%d tickers, SPY present=%s) from %s",
+                "PriceStore: loaded %d rows (%d tickers, SPY present=%s) from SQLite",
                 len(df),
                 df["ticker"].nunique(),
                 self.has_spy,
-                price_file,
             )
         except Exception as exc:
-            logger.warning("PriceStore: failed to load %s: %s", price_file, exc)
+            logger.warning("PriceStore: failed to load from SQLite: %s", exc)
             self.df = None
             self.loaded = False
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     def has_data(self, ticker: str) -> bool:
         return bool(self.loaded and self.df is not None and not self.df[self.df["ticker"] == ticker].empty)
@@ -227,19 +233,39 @@ class EnhancedSmartMoneyScreener:
     def load_data(self) -> bool:
         """Load all analysis results"""
         try:
-            # Volume Analysis
-            vol_file = os.path.join(self.data_dir, 'us_volume_analysis.csv')
-            if os.path.exists(vol_file):
-                self.volume_df = pd.read_csv(vol_file)
-                logger.info(f"✅ Loaded volume analysis: {len(self.volume_df)} stocks")
-            else:
-                logger.warning("⚠️ Volume analysis not found")
+            conn = get_db_connection()
+            if conn is None:
+                logger.warning("⚠️ SQLite connection unavailable")
                 return False
-            
-            # ETF Flows
-            etf_file = os.path.join(self.data_dir, 'us_etf_flows.csv')
-            if os.path.exists(etf_file):
-                self.etf_df = pd.read_csv(etf_file)
+
+            try:
+                # Volume Analysis (latest snapshot)
+                volume_query = """
+                    SELECT *
+                    FROM market_volume_analysis
+                    WHERE as_of_date = (SELECT MAX(as_of_date) FROM market_volume_analysis)
+                """
+                self.volume_df = pd.read_sql_query(volume_query, conn)
+                if self.volume_df.empty:
+                    logger.warning("⚠️ Volume analysis not found in SQLite")
+                    return False
+                logger.info("✅ Loaded volume analysis from SQLite: %d stocks", len(self.volume_df))
+
+                # ETF Flows (latest snapshot)
+                etf_query = """
+                    SELECT *
+                    FROM market_etf_flows
+                    WHERE as_of_date = (SELECT MAX(as_of_date) FROM market_etf_flows)
+                """
+                self.etf_df = pd.read_sql_query(etf_query, conn)
+                if self.etf_df.empty:
+                    logger.warning("⚠️ ETF flows not found in SQLite")
+                    self.etf_df = None
+            finally:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
             
             # Load SPY for relative strength
             logger.info("📈 Loading SPY benchmark data...")
@@ -1070,6 +1096,7 @@ class EnhancedSmartMoneyScreener:
         # Save results
         results_df.to_csv(self.output_file, index=False)
         logger.info(f"✅ Saved to {self.output_file}")
+        self._save_to_db(results_df)
         
         # Print summary
         logger.info("\n📊 Grade Distribution:")
@@ -1078,6 +1105,82 @@ class EnhancedSmartMoneyScreener:
             logger.info(f"   {grade}: {count} stocks")
         
         return results_df
+
+    def _save_to_db(self, results_df: pd.DataFrame) -> int:
+        if results_df.empty:
+            return 0
+        conn = get_db_connection()
+        if conn is None:
+            return 0
+        inserted = 0
+        now = datetime.utcnow().isoformat()
+        analysis_date = now[:10]
+        run_id = "sm_" + "".join(ch for ch in now if ch.isalnum())
+        summary = {
+            "total_analyzed": len(results_df),
+            "avg_score": round(float(results_df["composite_score"].mean()), 2),
+        }
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT OR IGNORE INTO market_smart_money_runs
+                (run_id, analysis_date, analysis_timestamp, summary_json, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (run_id, analysis_date, now, json.dumps(summary, ensure_ascii=False), now),
+            )
+
+            for _, row in results_df.iterrows():
+                try:
+                    cursor.execute(
+                        """
+                        INSERT OR REPLACE INTO market_smart_money_picks
+                        (run_id, rank, ticker, name, sector, composite_score, grade, current_price,
+                         price_at_rec, change_since_rec, target_upside, sd_score, tech_score, fund_score,
+                         analyst_score, rs_score, recommendation, rsi, ma_signal, pe_ratio, market_cap_b,
+                         size, rs_20d)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            run_id,
+                            row.get("rank"),
+                            row.get("ticker"),
+                            row.get("name"),
+                            row.get("sector"),
+                            row.get("composite_score"),
+                            row.get("grade"),
+                            row.get("current_price"),
+                            row.get("current_price"),
+                            0,
+                            row.get("target_upside"),
+                            row.get("sd_score"),
+                            row.get("tech_score"),
+                            row.get("fund_score"),
+                            row.get("analyst_score"),
+                            row.get("rs_score"),
+                            row.get("recommendation"),
+                            row.get("rsi"),
+                            row.get("ma_signal"),
+                            row.get("pe_ratio"),
+                            row.get("market_cap_b"),
+                            row.get("size"),
+                            row.get("rs_20d"),
+                        ),
+                    )
+                    inserted += 1
+                except Exception as exc:
+                    logger.debug("DB insert failed: %s", exc)
+            conn.commit()
+            logger.info("🗄️ SQLite: Inserted %d rows into market_smart_money_picks", inserted)
+        except Exception as exc:
+            logger.warning("⚠️ SQLite save failed (CSV still saved): %s", exc)
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        return inserted
 
 
 def main():

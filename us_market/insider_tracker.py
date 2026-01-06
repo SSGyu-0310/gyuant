@@ -20,6 +20,7 @@ if str(ROOT_DIR) not in sys.path:
 
 from utils.fmp_client import get_fmp_client
 from utils.symbols import to_fmp_symbol
+from utils.db_writer import write_market_documents
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -195,6 +196,11 @@ class InsiderTracker:
         with open(self.output_file, 'w') as f:
             json.dump(output, f, indent=2)
         logger.info(f"✅ Saved to {self.output_file}")
+        write_market_documents(
+            "insider_moves",
+            output,
+            as_of_date=output.get("timestamp", "")[:10],
+        )
         
         return output
     

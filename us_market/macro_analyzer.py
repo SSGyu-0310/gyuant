@@ -22,6 +22,7 @@ if str(ROOT_DIR) not in sys.path:
 from utils.env import load_env
 from utils.fmp_client import get_fmp_client
 from utils.symbols import to_fmp_symbol
+from utils.db_writer import write_market_documents
 
 load_env()
 
@@ -326,6 +327,8 @@ class MultiModelAnalyzer:
         with open(self.output_file, 'w', encoding='utf-8') as f:
             json.dump(output, f, indent=2, ensure_ascii=False)
         logger.info(f"✅ Saved to {self.output_file}")
+        as_of_date = output.get("timestamp", "")[:10]
+        write_market_documents("macro_analysis", output, as_of_date=as_of_date, lang="ko", model="gemini")
         
         # Save English version
         en_output_file = os.path.join(self.data_dir, 'macro_analysis_en.json')
@@ -336,6 +339,7 @@ class MultiModelAnalyzer:
         }
         with open(en_output_file, 'w') as f:
             json.dump(en_output, f, indent=2)
+        write_market_documents("macro_analysis", en_output, as_of_date=as_of_date, lang="en", model="gemini")
         
         return output
     
