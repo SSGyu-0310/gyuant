@@ -23,12 +23,9 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from utils.db_writer_pg import get_db_writer
+from utils.env import load_env
 
-try:
-    from dotenv import load_dotenv
-    load_dotenv(ROOT_DIR / ".env")
-except ImportError:
-    pass
+load_env()
 
 logging.basicConfig(
     level=logging.INFO,

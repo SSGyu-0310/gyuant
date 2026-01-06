@@ -24,14 +24,14 @@ from typing import Any, Dict, List, Mapping, Optional, Tuple
 from tqdm import tqdm
 import warnings
 warnings.filterwarnings('ignore')
-from dotenv import load_dotenv
-
-# Load .env from repo root (one level up)
-load_dotenv(dotenv_path=Path(__file__).resolve().parent.parent / ".env")
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
-    sys.path.append(str(ROOT_DIR))
+    sys.path.insert(0, str(ROOT_DIR))
+
+from utils.env import load_env
+
+load_env()
 
 from utils.fmp_client import FMPClient
 from utils.symbols import to_fmp_symbol

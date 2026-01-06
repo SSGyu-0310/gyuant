@@ -20,23 +20,19 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import pandas as pd
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-except ImportError:
-    pass
+from utils.db import get_engine
+from utils.env import load_env
+
+load_env()
 
 logger = logging.getLogger(__name__)
 
 # Configuration
 USE_POSTGRES = os.getenv("USE_POSTGRES", "true").lower() == "true"
 DATA_DIR = Path(os.getenv("DATA_DIR", Path(__file__).resolve().parents[1] / "us_market"))
-
-_PG_ENGINE: Optional[Engine] = None
-
 
 # =============================================================================
 # PostgreSQL Data Access
@@ -125,16 +121,7 @@ def _pg_get_prices(
 
 def _get_pg_engine() -> Engine:
     """Create or return cached SQLAlchemy engine for PostgreSQL."""
-    global _PG_ENGINE
-    if _PG_ENGINE is None:
-        pg_host = os.getenv("PG_HOST", "localhost")
-        pg_port = os.getenv("PG_PORT", "5432")
-        pg_db = os.getenv("PG_DATABASE", "gyuant_market")
-        pg_user = os.getenv("PG_USER", "postgres")
-        pg_pass = os.getenv("PG_PASSWORD", "")
-        url = f"postgresql+psycopg://{pg_user}:{pg_pass}@{pg_host}:{pg_port}/{pg_db}"
-        _PG_ENGINE = create_engine(url, pool_pre_ping=True)
-    return _PG_ENGINE
+    return get_engine()
 
 
 def _pg_get_tickers(active_only: bool = True) -> pd.DataFrame:

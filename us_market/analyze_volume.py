@@ -14,15 +14,15 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 from tqdm import tqdm
 from pathlib import Path
-from dotenv import load_dotenv
 
 # Add parent directory for imports
 ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-# Load .env located at repo root
-load_dotenv(dotenv_path=ROOT_DIR / ".env")
+from utils.env import load_env
+
+load_env()
 
 # PostgreSQL toggle
 USE_POSTGRES = os.getenv('USE_POSTGRES', 'true').lower() == 'true'

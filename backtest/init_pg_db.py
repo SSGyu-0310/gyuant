@@ -23,13 +23,10 @@ if str(ROOT_DIR) not in sys.path:
 
 from backtest.db_schema_pg import init_db, get_engine, get_session, Ticker, DailyPrice
 from utils.db_writer_pg import get_db_writer
+from utils.env import load_env
 from utils.fmp_client import get_fmp_client
 
-try:
-    from dotenv import load_dotenv
-    load_dotenv(ROOT_DIR / ".env")
-except ImportError:
-    pass
+load_env()
 
 # Setup logging
 logging.basicConfig(

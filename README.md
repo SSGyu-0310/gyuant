@@ -5,6 +5,68 @@
 
 ---
 
+## PostgreSQL 로컬 개발 시작하기
+
+PostgreSQL 전환 기준으로 기본값은 `USE_POSTGRES=true`입니다.  
+CSV fallback을 사용하려면 `USE_POSTGRES=false`로 설정하세요.
+
+### 1) .env 설정
+
+```bash
+cp .env.example .env
+```
+
+`.env`에 아래 값을 채웁니다.
+
+```
+USE_POSTGRES=true
+PG_HOST=localhost
+PG_PORT=5432
+PG_DATABASE=gyuant_market
+PG_USER=postgres
+PG_PASSWORD=your_postgres_password_here
+```
+
+### 2) PostgreSQL 실행
+
+옵션 A: Docker (권장)
+
+```bash
+docker compose up -d postgres
+```
+
+옵션 B: 로컬 설치
+
+```bash
+# 예시 (macOS/Linux)
+createdb gyuant_market
+createuser postgres
+```
+
+### 3) 스키마 초기화 (idempotent)
+
+```bash
+python scripts/init_db.py
+```
+
+### 4) (옵션) CSV -> PostgreSQL 마이그레이션
+
+```bash
+python scripts/migrate_csv_to_postgres.py
+```
+
+### 5) 헬스체크 (DB 연결 테스트)
+
+```bash
+RUN_DB_TESTS=1 pytest tests/test_db_connection.py -q
+```
+
+### Troubleshooting
+
+- 5432 포트가 이미 사용 중이면 `PG_PORT` 또는 docker 포트 매핑을 변경하세요.
+- 패스워드/권한 오류는 `PG_USER`, `PG_PASSWORD`, DB 권한을 확인하세요.
+- CSV 마이그레이션은 `DATA_DIR`에 CSV가 있을 때만 동작합니다 (`us_market` 기본).
+
 ## ✨ Features
 
 - **Smart Money Screener (5-Factor)**: 수급, 기술적 지표, 펀더멘털, 애널리스트 등급, 상대강도 등을 결합해 **S~F 등급** 산출

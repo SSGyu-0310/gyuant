@@ -16,15 +16,12 @@ import logging
 from typing import List, Dict, Any, Optional
 from datetime import datetime, date
 
-import psycopg
-from psycopg import sql
 from psycopg import Connection as PgConnection
 
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-except ImportError:
-    pass
+from utils.db import close_db_connection, get_db_connection
+from utils.env import load_env
+
+load_env()
 
 logger = logging.getLogger(__name__)
 
@@ -56,27 +53,14 @@ class PostgresDBWriter:
     
     def _create_connection(self) -> PgConnection:
         """Create a new PostgreSQL connection."""
-        host = os.getenv("PG_HOST", "localhost")
-        port = os.getenv("PG_PORT", "5432")
-        database = os.getenv("PG_DATABASE", "gyuant_market")
-        user = os.getenv("PG_USER", "postgres")
-        password = os.getenv("PG_PASSWORD", "")
-        
-        conn = psycopg.connect(
-            host=host,
-            port=port,
-            dbname=database,
-            user=user,
-            password=password,
-        )
-        conn.autocommit = False
-        logger.info(f"PostgreSQL connected: {host}:{port}/{database}")
+        conn = get_db_connection()
+        logger.info("PostgreSQL connected")
         return conn
     
     def close(self):
         """Close the database connection."""
         if self._connection and not self._connection.closed:
-            self._connection.close()
+            close_db_connection()
             self._connection = None
             logger.info("PostgreSQL connection closed")
     

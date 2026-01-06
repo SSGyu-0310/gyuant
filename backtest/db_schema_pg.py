@@ -36,30 +36,14 @@ from sqlalchemy import (
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 from sqlalchemy.engine import Engine
 
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-except ImportError:
-    pass
+from utils.db import get_database_url
+from utils.env import load_env
+
+load_env()
 
 logger = logging.getLogger(__name__)
 
 Base = declarative_base()
-
-
-# =============================================================================
-# Database Connection
-# =============================================================================
-
-def get_database_url() -> str:
-    """Build PostgreSQL connection URL from environment variables."""
-    host = os.getenv("PG_HOST", "localhost")
-    port = os.getenv("PG_PORT", "5432")
-    database = os.getenv("PG_DATABASE", "gyuant_market")
-    user = os.getenv("PG_USER", "postgres")
-    password = os.getenv("PG_PASSWORD", "")
-    
-    return f"postgresql+psycopg://{user}:{password}@{host}:{port}/{database}"
 
 
 _engine: Optional[Engine] = None

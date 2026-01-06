@@ -2,21 +2,13 @@ import logging
 import os
 import time
 import random
-from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
 import requests
 
-try:
-    from dotenv import load_dotenv
-except Exception:  # pragma: no cover
-    load_dotenv = None
+from utils.env import load_env
 
-if load_dotenv:
-    load_dotenv()
-    root_env = Path(__file__).resolve().parents[1] / ".env"
-    if root_env.exists():
-        load_dotenv(root_env)
+load_env()
 
 logger = logging.getLogger(__name__)
 
