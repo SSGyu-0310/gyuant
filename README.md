@@ -5,11 +5,73 @@
 
 ---
 
+## PostgreSQL 로컬 개발 시작하기
+
+PostgreSQL 전환 기준으로 기본값은 `USE_POSTGRES=true`입니다.  
+CSV fallback을 사용하려면 `USE_POSTGRES=false`로 설정하세요.
+
+### 1) .env 설정
+
+```bash
+cp .env.example .env
+```
+
+`.env`에 아래 값을 채웁니다.
+
+```
+USE_POSTGRES=true
+PG_HOST=localhost
+PG_PORT=5432
+PG_DATABASE=gyuant_market
+PG_USER=postgres
+PG_PASSWORD=your_postgres_password_here
+```
+
+### 2) PostgreSQL 실행
+
+옵션 A: Docker (권장)
+
+```bash
+docker compose up -d postgres
+```
+
+옵션 B: 로컬 설치
+
+```bash
+# 예시 (macOS/Linux)
+createdb gyuant_market
+createuser postgres
+```
+
+### 3) 스키마 초기화 (idempotent)
+
+```bash
+python scripts/init_db.py
+```
+
+### 4) (옵션) CSV -> PostgreSQL 마이그레이션
+
+```bash
+python scripts/migrate_csv_to_postgres.py
+```
+
+### 5) 헬스체크 (DB 연결 테스트)
+
+```bash
+RUN_DB_TESTS=1 pytest tests/test_db_connection.py -q
+```
+
+### Troubleshooting
+
+- 5432 포트가 이미 사용 중이면 `PG_PORT` 또는 docker 포트 매핑을 변경하세요.
+- 패스워드/권한 오류는 `PG_USER`, `PG_PASSWORD`, DB 권한을 확인하세요.
+- CSV 마이그레이션은 `DATA_DIR`에 CSV가 있을 때만 동작합니다 (`us_market` 기본).
+
 ## ✨ Features
 
 - **Smart Money Screener (5-Factor)**: 수급, 기술적 지표, 펀더멘털, 애널리스트 등급, 상대강도 등을 결합해 **S~F 등급** 산출
 - **Options Flow**: 비정상 옵션 거래량, Put/Call Ratio 등을 통해 **시장 방향성 신호 감지**
-- **AI Analysis**: **Gemini (flash)** 기반으로 수집 데이터를 투자 인사이트로 요약
+- **AI Analysis**: **Gemini (flash)** 기반으로 수집 데이터를 투자 인사이트로 요약 (`google-genai` 사용)
 - **Data Sources**: 시세/펀더멘털은 FMP 기반, 옵션 체인 및 일부 글로벌/환율은 yfinance fallback
 
 ---
@@ -31,6 +93,12 @@
 ├── .env.example                   # 환경 변수 설정 샘플
 └── requirements.txt               # 필수 패키지 목록
 ```
+
+### Additional Setup Files
+
+- `docker-compose.yml` : PostgreSQL 실행 (선택)
+- `scripts/init_db.py` : PostgreSQL 스키마 초기화 (idempotent)
+- `scripts/migrate_csv_to_postgres.py` : CSV -> PostgreSQL 마이그레이션 (선택)
 
 ---
 
@@ -54,9 +122,12 @@ cp .env.example .env
 
 `.env`에 아래 값들을 입력하세요.
 
-- `GOOGLE_API_KEY` : Gemini AI 분석에 필요
+- `GOOGLE_API_KEY` : Gemini AI 분석에 필요 (또는 `GEMINI_API_KEY`)
+- `GEMINI_API_KEY` : `GOOGLE_API_KEY` 대체 가능
 - `FMP_API_KEY` : FMP 기반 시장 데이터 수집에 필요
 - `DATA_DIR` : 데이터가 저장될 폴더 (기본값: `us_market`)
+- `USE_POSTGRES` : PostgreSQL 사용 여부 (`true`/`false`)
+- `PG_HOST`, `PG_PORT`, `PG_DATABASE`, `PG_USER`, `PG_PASSWORD` : PostgreSQL 연결 정보
 
 ```bash
 # 예시: 편한 에디터로 열기
@@ -101,7 +172,7 @@ copy .env.example .env
 WSL(리눅스 터미널)에서는 위 Windows 명령이 동작하지 않습니다.  
 WSL은 **Linux/macOS 섹션**을 그대로 따라야 합니다.
 
-`.env`에 `GOOGLE_API_KEY`, `FMP_API_KEY`, `DATA_DIR`를 입력합니다.
+`.env`에 `GOOGLE_API_KEY`/`GEMINI_API_KEY`, `FMP_API_KEY`, `DATA_DIR`를 입력하고, PostgreSQL 사용 시 `USE_POSTGRES`, `PG_*`도 설정합니다.
 
 ```bat
 :: 5) 파이프라인 실행 (최초 1회)
@@ -170,6 +241,7 @@ start_server.bat
 
 ```bash
 pytest
+RUN_DB_TESTS=1 pytest tests/test_db_connection.py -q
 ```
 
 ---

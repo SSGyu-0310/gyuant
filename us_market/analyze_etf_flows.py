@@ -19,7 +19,7 @@ from tqdm import tqdm
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
-    sys.path.append(str(ROOT_DIR))
+    sys.path.insert(0, str(ROOT_DIR))
 
 from utils.fmp_client import get_fmp_client
 from utils.symbols import to_fmp_symbol
@@ -33,13 +33,24 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def _resolve_data_dir(data_dir: Optional[str]) -> str:
+    if data_dir:
+        path = Path(data_dir)
+    else:
+        env_val = os.getenv("DATA_DIR", "us_market")
+        path = Path(env_val)
+    if not path.is_absolute():
+        path = (ROOT_DIR / path).resolve()
+    return str(path)
+
+
 class ETFFlowAnalyzer:
     """Analyze ETF fund flows using volume and price indicators"""
     
-    def __init__(self, data_dir: str = '.'):
-        self.data_dir = data_dir
-        self.output_csv = os.path.join(data_dir, 'us_etf_flows.csv')
-        self.output_json = os.path.join(data_dir, 'etf_flow_analysis.json')
+    def __init__(self, data_dir: Optional[str] = None):
+        self.data_dir = _resolve_data_dir(data_dir)
+        self.output_csv = os.path.join(self.data_dir, 'us_etf_flows.csv')
+        self.output_json = os.path.join(self.data_dir, 'etf_flow_analysis.json')
         self.fmp = get_fmp_client()
         
         # Major ETFs to track (24 ETFs covering different sectors/asset classes)
@@ -203,15 +214,14 @@ class ETFFlowAnalyzer:
     def generate_ai_analysis(self, results_df: pd.DataFrame) -> Optional[Dict]:
         """Generate AI analysis using Gemini (optional)"""
         try:
-            import google.generativeai as genai
+            from google import genai
             
             api_key = os.getenv('GEMINI_API_KEY')
             if not api_key:
                 logger.info("⚠️ GEMINI_API_KEY not set, skipping AI analysis")
                 return None
             
-            genai.configure(api_key=api_key)
-            model = genai.GenerativeModel('gemini-1.5-flash')
+            client = genai.Client(api_key=api_key)
             
             # Prepare data summary
             inflows = results_df[results_df['flow_status'].str.contains('Inflow')]
@@ -234,11 +244,22 @@ Please provide:
 Keep the response concise and actionable.
 """
             
-            response = model.generate_content(prompt)
-            
+            response = client.models.generate_content(
+                model="gemini-1.5-flash",
+                contents=prompt,
+            )
+            text = getattr(response, "text", "") or ""
+            if not text:
+                candidates = getattr(response, "candidates", []) or []
+                if candidates:
+                    content = getattr(candidates[0], "content", None)
+                    parts = getattr(content, "parts", []) if content else []
+                    if parts:
+                        text = getattr(parts[0], "text", "") or ""
+
             return {
                 'timestamp': datetime.now().isoformat(),
-                'analysis': response.text,
+                'analysis': text,
                 'data_summary': {
                     'total_etfs': len(results_df),
                     'inflows': len(inflows),
@@ -248,7 +269,7 @@ Keep the response concise and actionable.
             }
             
         except ImportError:
-            logger.info("⚠️ google-generativeai not installed, skipping AI analysis")
+            logger.info("⚠️ google-genai not installed, skipping AI analysis")
             return None
         except Exception as e:
             logger.warning(f"AI analysis failed: {e}")
@@ -392,7 +413,7 @@ def main():
     import argparse
     
     parser = argparse.ArgumentParser(description='ETF Flow Analysis')
-    parser.add_argument('--dir', default='.', help='Data directory')
+    parser.add_argument('--dir', default=None, help='Data directory (defaults to DATA_DIR or us_market)')
     parser.add_argument('--skip-ai', action='store_true', help='Skip AI analysis')
     args = parser.parse_args()
     

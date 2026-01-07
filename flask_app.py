@@ -26,6 +26,7 @@ from utils.symbols import map_symbols_to_fmp, to_fmp_symbol
 from utils.options_unusual import score_options_flow, load_options_raw
 from backtest.db_schema import get_connection
 from collections import defaultdict
+from utils.data_access import get_prices, get_tickers, get_volume_analysis
 
 logger = setup_logger('flask_server', 'server.log')
 request_logger = logging.getLogger('request_logger')
@@ -837,17 +838,21 @@ def get_us_portfolio_data():
 
 
 def build_smart_money_from_analysis():
-    vol_path = US_DIR / 'us_volume_analysis.csv'
-    info_path = US_DIR / 'us_stocks_list.csv'
-
-    if not os.path.exists(vol_path):
-        return [], {'total_analyzed': 0, 'avg_score': 0}
-
-    vol_df = pd.read_csv(vol_path)
+    # Try PostgreSQL first via data_access layer, fallback to CSV
+    vol_df = get_volume_analysis()
+    
+    if vol_df.empty:
+        # Fallback to CSV
+        vol_path = US_DIR / 'us_volume_analysis.csv'
+        if not os.path.exists(vol_path):
+            return [], {'total_analyzed': 0, 'avg_score': 0}
+        vol_df = pd.read_csv(vol_path)
+    
     vol_df['supply_demand_score'] = pd.to_numeric(vol_df.get('supply_demand_score', 0), errors='coerce').fillna(0)
 
-    if os.path.exists(info_path):
-        info_df = pd.read_csv(info_path)
+    # Get ticker info from data_access
+    info_df = get_tickers()
+    if not info_df.empty:
         vol_df = vol_df.merge(info_df[['ticker', 'name', 'sector']], on='ticker', how='left')
 
     vol_df['composite_score'] = vol_df['supply_demand_score'].clip(0, 100)
@@ -1262,41 +1267,15 @@ def get_us_sector_heatmap():
 
 
 def _compute_top_movers(window: str, limit: int) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], int, str, List[str]]:
-    path = US_DIR / 'us_daily_prices.csv'
     errors: List[str] = []
     rows_read = 0
-    updated_at = None
-    db_conn = _get_db_connection()
-    if db_conn is None and not path.exists():
-        return [], [], rows_read, updated_at, errors
-
-    if db_conn is None:
-        try:
-            mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).astimezone()
-            updated_at = mtime.isoformat()
-        except Exception:
-            updated_at = None
+    updated_at = _now_iso()
 
     try:
-        if db_conn is not None:
-            try:
-                df = pd.read_sql("SELECT ticker, date, close FROM market_prices_daily", db_conn)
-                rows_read = len(df)
-                try:
-                    max_date = pd.to_datetime(df["date"], errors="coerce").max()
-                    if pd.notna(max_date):
-                        updated_at = max_date.isoformat()
-                except Exception:
-                    pass
-            except Exception as exc:
-                errors.append(f"DB_READ_FAILED: {exc}")
-                if not path.exists():
-                    return [], [], rows_read, updated_at, errors
-                df = pd.read_csv(path, usecols=["ticker", "date", "close"])
-        else:
-            df = pd.read_csv(path, usecols=["ticker", "date", "close"])
+        # Use data_access layer (PostgreSQL or CSV fallback)
+        df = get_prices(columns=["ticker", "date", "close"])
         rows_read = len(df)
-        logger.debug(f"_compute_top_movers: Read {rows_read} rows from {'DB' if db_conn is not None else path}")
+        logger.debug(f"_compute_top_movers: Read {rows_read} rows from data_access")
         if df.empty:
             errors.append("EMPTY_CSV")
             return [], [], rows_read, updated_at, errors

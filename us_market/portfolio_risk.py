@@ -17,7 +17,7 @@ from typing import Dict, List, Optional
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
-    sys.path.append(str(ROOT_DIR))
+    sys.path.insert(0, str(ROOT_DIR))
 
 from utils.fmp_client import get_fmp_client
 from utils.symbols import to_fmp_symbol

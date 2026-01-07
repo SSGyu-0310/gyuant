@@ -25,18 +25,21 @@ from typing import Any, Dict, List, Mapping, Optional, Tuple
 from tqdm import tqdm
 import warnings
 warnings.filterwarnings('ignore')
-from dotenv import load_dotenv
-
-# Load .env from repo root (one level up)
-load_dotenv(dotenv_path=Path(__file__).resolve().parent.parent / ".env")
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
-    sys.path.append(str(ROOT_DIR))
+    sys.path.insert(0, str(ROOT_DIR))
+
+from utils.env import load_env
+
+load_env()
 
 from utils.fmp_client import FMPClient
 from utils.symbols import to_fmp_symbol
 from utils.db_writer import get_db_connection
+
+# PostgreSQL toggle
+USE_POSTGRES = os.getenv('USE_POSTGRES', 'true').lower() == 'true'
 
 # Logging Configuration
 logging.basicConfig(
@@ -58,9 +61,38 @@ class PriceStore:
         self._load()
 
     def _load(self) -> None:
-        conn = get_db_connection()
-        if conn is None:
-            logger.warning("PriceStore: SQLite connection unavailable")
+        # Try PostgreSQL first
+        if USE_POSTGRES:
+            try:
+                from utils.data_access import get_prices
+                logger.info("PriceStore: loading from PostgreSQL...")
+                df = get_prices()
+                if not df.empty:
+                    df['date'] = pd.to_datetime(df['date'], errors='coerce')
+                    # Map 'close' to 'current_price' for compatibility
+                    if 'close' in df.columns and 'current_price' not in df.columns:
+                        df['current_price'] = df['close']
+                    df = df.dropna(subset=['date', 'ticker'])
+                    df['ticker'] = df['ticker'].astype('category')
+                    if 'name' in df.columns:
+                        df['name'] = df['name'].astype('category')
+                    # Keep only recent window
+                    cutoff = pd.Timestamp(datetime.utcnow().date() - timedelta(days=self.lookback_days + 10))
+                    df = df[df['date'] >= cutoff]
+                    df = df.sort_values(['ticker', 'date'])
+                    self.has_spy = (df['ticker'] == 'SPY').any()
+                    self.df = df
+                    self.loaded = True
+                    logger.info("PriceStore: loaded %d rows (%d tickers) from PostgreSQL", len(df), df['ticker'].nunique())
+                    return
+                logger.info("PriceStore: PostgreSQL empty, falling back to CSV")
+            except Exception as exc:
+                logger.warning("PriceStore: PostgreSQL load failed: %s, falling back to CSV", exc)
+        
+        # CSV Fallback
+        price_file = self.data_dir / "us_daily_prices.csv"
+        if not price_file.exists():
+            logger.warning("PriceStore: local price file not found: %s", price_file)
             return
         try:
             cutoff = (datetime.utcnow().date() - timedelta(days=self.lookback_days + 10)).isoformat()

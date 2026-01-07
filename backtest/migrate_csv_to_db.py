@@ -17,7 +17,7 @@ import pandas as pd
 # Add parent directories to path
 ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
-    sys.path.append(str(ROOT_DIR))
+    sys.path.insert(0, str(ROOT_DIR))
 
 from backtest.db_schema import get_connection, init_db, get_db_path, get_table_counts
 
