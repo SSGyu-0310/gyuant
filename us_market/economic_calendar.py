@@ -13,7 +13,6 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Dict, List
 
-<<<<<<< HEAD
 # Add parent directory to path for imports
 ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
@@ -23,20 +22,6 @@ from utils.env import load_env
 from utils.fmp_client import get_fmp_client
 
 load_env()
-=======
-from dotenv import load_dotenv
-
-load_dotenv()
-load_dotenv(os.path.join(os.path.dirname(os.path.dirname(__file__)), '.env'))
-
-# Add parent directory to path for imports
-ROOT_DIR = Path(__file__).resolve().parents[1]
-if str(ROOT_DIR) not in sys.path:
-    sys.path.append(str(ROOT_DIR))
-
-from utils.fmp_client import get_fmp_client
-from utils.db_writer import write_market_documents
->>>>>>> 449e7dd173e98e828f7dd1d06105202eea95ed0e
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)

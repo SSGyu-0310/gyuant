@@ -71,7 +71,7 @@ RUN_DB_TESTS=1 pytest tests/test_db_connection.py -q
 
 - **Smart Money Screener (5-Factor)**: 수급, 기술적 지표, 펀더멘털, 애널리스트 등급, 상대강도 등을 결합해 **S~F 등급** 산출
 - **Options Flow**: 비정상 옵션 거래량, Put/Call Ratio 등을 통해 **시장 방향성 신호 감지**
-- **AI Analysis**: **Gemini (flash)** 기반으로 수집 데이터를 투자 인사이트로 요약
+- **AI Analysis**: **Gemini (flash)** 기반으로 수집 데이터를 투자 인사이트로 요약 (`google-genai` 사용)
 - **Data Sources**: 시세/펀더멘털은 FMP 기반, 옵션 체인 및 일부 글로벌/환율은 yfinance fallback
 
 ---
@@ -93,6 +93,12 @@ RUN_DB_TESTS=1 pytest tests/test_db_connection.py -q
 ├── .env.example                   # 환경 변수 설정 샘플
 └── requirements.txt               # 필수 패키지 목록
 ```
+
+### Additional Setup Files
+
+- `docker-compose.yml` : PostgreSQL 실행 (선택)
+- `scripts/init_db.py` : PostgreSQL 스키마 초기화 (idempotent)
+- `scripts/migrate_csv_to_postgres.py` : CSV -> PostgreSQL 마이그레이션 (선택)
 
 ---
 
@@ -116,9 +122,12 @@ cp .env.example .env
 
 `.env`에 아래 값들을 입력하세요.
 
-- `GOOGLE_API_KEY` : Gemini AI 분석에 필요
+- `GOOGLE_API_KEY` : Gemini AI 분석에 필요 (또는 `GEMINI_API_KEY`)
+- `GEMINI_API_KEY` : `GOOGLE_API_KEY` 대체 가능
 - `FMP_API_KEY` : FMP 기반 시장 데이터 수집에 필요
 - `DATA_DIR` : 데이터가 저장될 폴더 (기본값: `us_market`)
+- `USE_POSTGRES` : PostgreSQL 사용 여부 (`true`/`false`)
+- `PG_HOST`, `PG_PORT`, `PG_DATABASE`, `PG_USER`, `PG_PASSWORD` : PostgreSQL 연결 정보
 
 ```bash
 # 예시: 편한 에디터로 열기
@@ -163,7 +172,7 @@ copy .env.example .env
 WSL(리눅스 터미널)에서는 위 Windows 명령이 동작하지 않습니다.  
 WSL은 **Linux/macOS 섹션**을 그대로 따라야 합니다.
 
-`.env`에 `GOOGLE_API_KEY`, `FMP_API_KEY`, `DATA_DIR`를 입력합니다.
+`.env`에 `GOOGLE_API_KEY`/`GEMINI_API_KEY`, `FMP_API_KEY`, `DATA_DIR`를 입력하고, PostgreSQL 사용 시 `USE_POSTGRES`, `PG_*`도 설정합니다.
 
 ```bat
 :: 5) 파이프라인 실행 (최초 1회)
@@ -232,6 +241,7 @@ start_server.bat
 
 ```bash
 pytest
+RUN_DB_TESTS=1 pytest tests/test_db_connection.py -q
 ```
 
 ---
