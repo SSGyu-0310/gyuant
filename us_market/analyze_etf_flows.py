@@ -33,13 +33,24 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def _resolve_data_dir(data_dir: Optional[str]) -> str:
+    if data_dir:
+        path = Path(data_dir)
+    else:
+        env_val = os.getenv("DATA_DIR", "us_market")
+        path = Path(env_val)
+    if not path.is_absolute():
+        path = (ROOT_DIR / path).resolve()
+    return str(path)
+
+
 class ETFFlowAnalyzer:
     """Analyze ETF fund flows using volume and price indicators"""
     
-    def __init__(self, data_dir: str = '.'):
-        self.data_dir = data_dir
-        self.output_csv = os.path.join(data_dir, 'us_etf_flows.csv')
-        self.output_json = os.path.join(data_dir, 'etf_flow_analysis.json')
+    def __init__(self, data_dir: Optional[str] = None):
+        self.data_dir = _resolve_data_dir(data_dir)
+        self.output_csv = os.path.join(self.data_dir, 'us_etf_flows.csv')
+        self.output_json = os.path.join(self.data_dir, 'etf_flow_analysis.json')
         self.fmp = get_fmp_client()
         
         # Major ETFs to track (24 ETFs covering different sectors/asset classes)
@@ -402,7 +413,7 @@ def main():
     import argparse
     
     parser = argparse.ArgumentParser(description='ETF Flow Analysis')
-    parser.add_argument('--dir', default='.', help='Data directory')
+    parser.add_argument('--dir', default=None, help='Data directory (defaults to DATA_DIR or us_market)')
     parser.add_argument('--skip-ai', action='store_true', help='Skip AI analysis')
     args = parser.parse_args()
     
