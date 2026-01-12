@@ -123,7 +123,7 @@ cp .env.example .env
 `.env`에 아래 값들을 입력하세요.
 
 - `GOOGLE_API_KEY` : Gemini AI 분석에 필요 (또는 `GEMINI_API_KEY`)
-- `GEMINI_API_KEY` : `GOOGLE_API_KEY` 대체 가능
+- `GEMINI_API_KEY` : `GOOGLE_API_KEY` 대체 가능 (일부 스크립트는 `GEMINI_API_KEY`만 읽음)
 - `FMP_API_KEY` : FMP 기반 시장 데이터 수집에 필요
 - `DATA_DIR` : 데이터가 저장될 폴더 (기본값: `us_market`)
 - `USE_POSTGRES` : PostgreSQL 사용 여부 (`true`/`false`)
@@ -279,5 +279,6 @@ pip freeze > requirements.txt
 - 옵션 체인 분석은 yfinance를 유지합니다.
 - 한국 시장 관련 기능은 제거되었습니다.
 - 대시보드 UI는 `templates/` 기반으로 렌더링됩니다.
+- 옵션 플로우 분석을 실행하려면 `yfinance` 패키지를 별도로 설치해야 합니다.
 
 ---
