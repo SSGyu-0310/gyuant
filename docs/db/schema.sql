@@ -1,5 +1,5 @@
--- Gyuant SQLite schema (draft)
--- Single source of truth for operational + backtest data.
+-- Gyuant SQLite schema (runtime snapshot)
+-- Mirrors backtest/db_schema.py
 
 PRAGMA foreign_keys = ON;
 PRAGMA journal_mode = WAL;
@@ -37,8 +37,7 @@ CREATE TABLE IF NOT EXISTS market_prices_daily (
     change_rate REAL,
     source TEXT,
     ingested_at TEXT DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (ticker, date),
-    FOREIGN KEY (ticker) REFERENCES market_stocks(ticker) ON UPDATE CASCADE ON DELETE RESTRICT
+    PRIMARY KEY (ticker, date)
 );
 
 CREATE INDEX IF NOT EXISTS idx_market_prices_date
@@ -60,15 +59,11 @@ CREATE TABLE IF NOT EXISTS market_volume_analysis (
     supply_demand_stage TEXT,
     source TEXT,
     ingested_at TEXT DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (ticker, as_of_date),
-    FOREIGN KEY (ticker) REFERENCES market_stocks(ticker) ON UPDATE CASCADE ON DELETE RESTRICT
+    PRIMARY KEY (ticker, as_of_date)
 );
 
 CREATE INDEX IF NOT EXISTS idx_market_volume_asof
     ON market_volume_analysis(as_of_date);
-
-CREATE INDEX IF NOT EXISTS idx_market_volume_score
-    ON market_volume_analysis(as_of_date, supply_demand_score);
 
 CREATE TABLE IF NOT EXISTS market_etf_flows (
     ticker TEXT NOT NULL,
@@ -124,15 +119,11 @@ CREATE TABLE IF NOT EXISTS market_smart_money_picks (
     size TEXT,
     rs_20d REAL,
     PRIMARY KEY (run_id, ticker),
-    UNIQUE (run_id, rank),
-    FOREIGN KEY (run_id) REFERENCES market_smart_money_runs(run_id) ON DELETE CASCADE
+    UNIQUE (run_id, rank)
 );
 
 CREATE INDEX IF NOT EXISTS idx_market_picks_run
     ON market_smart_money_picks(run_id);
-
-CREATE INDEX IF NOT EXISTS idx_market_picks_ticker
-    ON market_smart_money_picks(ticker);
 
 CREATE TABLE IF NOT EXISTS market_documents (
     doc_type TEXT NOT NULL,
@@ -199,10 +190,7 @@ CREATE TABLE IF NOT EXISTS bt_signals (
     signal_value REAL,
     signal_rank INTEGER,
     meta_json TEXT,
-    PRIMARY KEY (signal_id, signal_version, as_of_date, ticker),
-    FOREIGN KEY (signal_id, signal_version)
-        REFERENCES bt_signal_definitions(signal_id, version)
-        ON UPDATE CASCADE ON DELETE RESTRICT
+    PRIMARY KEY (signal_id, signal_version, as_of_date, ticker)
 );
 
 CREATE INDEX IF NOT EXISTS idx_bt_signals_asof
@@ -210,54 +198,6 @@ CREATE INDEX IF NOT EXISTS idx_bt_signals_asof
 
 CREATE INDEX IF NOT EXISTS idx_bt_signals_rank
     ON bt_signals(signal_id, signal_version, as_of_date, signal_rank);
-
-CREATE TABLE IF NOT EXISTS bt_fundamentals (
-    as_of_date TEXT NOT NULL,
-    ticker TEXT NOT NULL,
-    pe_ratio REAL,
-    pb_ratio REAL,
-    revenue_growth REAL,
-    roe REAL,
-    market_cap REAL,
-    source TEXT,
-    PRIMARY KEY (as_of_date, ticker)
-);
-
-CREATE TABLE IF NOT EXISTS bt_alpha_defs (
-    alpha_id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    description TEXT,
-    status TEXT NOT NULL DEFAULT 'draft',
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT,
-    CHECK (status IN ('draft', 'active', 'deprecated'))
-);
-
-CREATE TABLE IF NOT EXISTS bt_alpha_versions (
-    alpha_id TEXT NOT NULL,
-    version TEXT NOT NULL,
-    expression TEXT NOT NULL,
-    params_schema_json TEXT,
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (alpha_id, version),
-    FOREIGN KEY (alpha_id) REFERENCES bt_alpha_defs(alpha_id)
-        ON UPDATE CASCADE ON DELETE CASCADE
-);
-
-CREATE TABLE IF NOT EXISTS bt_alpha_nl_requests (
-    request_id TEXT PRIMARY KEY,
-    alpha_id TEXT,
-    user_input TEXT NOT NULL,
-    llm_output TEXT,
-    model TEXT,
-    status TEXT NOT NULL DEFAULT 'pending',
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-    approved_at TEXT,
-    error TEXT,
-    CHECK (status IN ('pending', 'approved', 'rejected', 'failed')),
-    FOREIGN KEY (alpha_id) REFERENCES bt_alpha_defs(alpha_id)
-        ON UPDATE CASCADE ON DELETE SET NULL
-);
 
 CREATE TABLE IF NOT EXISTS bt_runs (
     run_id TEXT PRIMARY KEY,
@@ -277,13 +217,7 @@ CREATE TABLE IF NOT EXISTS bt_runs (
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     finished_at TEXT,
     error TEXT,
-    CHECK (status IN ('queued', 'running', 'finished', 'failed')),
-    FOREIGN KEY (signal_id, signal_version)
-        REFERENCES bt_signal_definitions(signal_id, version)
-        ON UPDATE CASCADE ON DELETE RESTRICT,
-    FOREIGN KEY (alpha_id, alpha_version)
-        REFERENCES bt_alpha_versions(alpha_id, version)
-        ON UPDATE CASCADE ON DELETE SET NULL
+    CHECK (status IN ('queued', 'running', 'finished', 'failed'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_bt_runs_status
@@ -300,8 +234,7 @@ CREATE TABLE IF NOT EXISTS bt_run_metrics (
     mdd REAL,
     total_return REAL,
     win_rate REAL,
-    turnover REAL,
-    FOREIGN KEY (run_id) REFERENCES bt_runs(run_id) ON DELETE CASCADE
+    turnover REAL
 );
 
 CREATE TABLE IF NOT EXISTS bt_run_equity_curve (
@@ -310,8 +243,7 @@ CREATE TABLE IF NOT EXISTS bt_run_equity_curve (
     equity REAL,
     returns REAL,
     drawdown REAL,
-    PRIMARY KEY (run_id, date),
-    FOREIGN KEY (run_id) REFERENCES bt_runs(run_id) ON DELETE CASCADE
+    PRIMARY KEY (run_id, date)
 );
 
 CREATE TABLE IF NOT EXISTS bt_run_positions (
@@ -323,8 +255,7 @@ CREATE TABLE IF NOT EXISTS bt_run_positions (
     exit_price REAL,
     weight REAL,
     shares REAL,
-    PRIMARY KEY (run_id, ticker, entry_date),
-    FOREIGN KEY (run_id) REFERENCES bt_runs(run_id) ON DELETE CASCADE
+    PRIMARY KEY (run_id, ticker, entry_date)
 );
 
 CREATE TABLE IF NOT EXISTS bt_run_trades (
@@ -336,20 +267,7 @@ CREATE TABLE IF NOT EXISTS bt_run_trades (
     price REAL,
     shares REAL,
     fee REAL,
-    PRIMARY KEY (run_id, trade_id),
-    FOREIGN KEY (run_id) REFERENCES bt_runs(run_id) ON DELETE CASCADE
-);
-
-CREATE TABLE IF NOT EXISTS bt_alpha_runs (
-    run_id TEXT PRIMARY KEY,
-    alpha_id TEXT NOT NULL,
-    alpha_version TEXT NOT NULL,
-    config_hash TEXT NOT NULL,
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (run_id) REFERENCES bt_runs(run_id) ON DELETE CASCADE,
-    FOREIGN KEY (alpha_id, alpha_version)
-        REFERENCES bt_alpha_versions(alpha_id, version)
-        ON UPDATE CASCADE ON DELETE RESTRICT
+    PRIMARY KEY (run_id, trade_id)
 );
 
 COMMIT;
