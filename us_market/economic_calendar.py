@@ -20,6 +20,7 @@ if str(ROOT_DIR) not in sys.path:
 
 from utils.env import load_env
 from utils.fmp_client import get_fmp_client
+from utils.db_writer import write_market_documents
 
 load_env()
 

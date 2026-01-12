@@ -268,11 +268,14 @@ Keep the response concise and actionable.
                 }
             }
             
-        except ImportError:
-            logger.info("⚠️ google-genai not installed, skipping AI analysis")
+        except ImportError as exc:
+            logger.warning(
+                "⚠️ google-genai import failed; skipping AI analysis: %s",
+                exc,
+            )
             return None
-        except Exception as e:
-            logger.warning(f"AI analysis failed: {e}")
+        except Exception:
+            logger.exception("AI analysis failed; skipping AI analysis")
             return None
     
     def run(self, skip_ai: bool = False) -> pd.DataFrame:

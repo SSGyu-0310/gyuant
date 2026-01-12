@@ -27,6 +27,8 @@ load_env()
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+from utils.db_writer import get_db_connection, fetch_latest_document, write_market_documents
+
 
 class NewsCollector:
     """Collect recent news for stocks"""
