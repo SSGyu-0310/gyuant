@@ -3,7 +3,7 @@ pandas
 numpy
 requests
 python-dotenv
-google-generativeai
+google-genai
 openai
 ta
 tqdm

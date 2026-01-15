@@ -16,10 +16,11 @@ from pathlib import Path
 import argparse
 import shutil
 
-try:
-    from dotenv import load_dotenv
-except Exception:
-    load_dotenv = None
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+from utils.env import load_env
 
 # Logging Configuration
 logging.basicConfig(
@@ -28,11 +29,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-if load_dotenv:
-    load_dotenv()
-    root_env = Path(__file__).resolve().parents[1] / ".env"
-    if root_env.exists():
-        load_dotenv(root_env)
+load_env()
 
 # ============================================================
 # Pipeline Definition (PART2/PART3 Blueprint)

@@ -115,7 +115,7 @@ class FinalReportGenerator:
             
             results.append({
                 'ticker': ticker,
-                'name': row.get('name', ticker),
+                'name': str(row.get('name', ticker)) if pd.notna(row.get('name')) else ticker,
                 'final_score': round(final_score, 1),
                 'quant_score': round(quant_score, 1),
                 'quant_grade': row.get('grade', 'N/A'),
@@ -208,7 +208,8 @@ class FinalReportGenerator:
         
         for pick in picks:
             rec_emoji = {"Strong Buy": "🔥", "Buy": "📈", "Hold": "📊", "Sell": "⚠️"}.get(pick['ai_recommendation'], "📊")
-            print(f"\n#{pick['rank']} {pick['ticker']} ({pick['name'][:25]})")
+            name_display = pick['name'][:25] if isinstance(pick['name'], str) else pick['ticker']
+            print(f"\n#{pick['rank']} {pick['ticker']} ({name_display})")
             print(f"   Score: {pick['final_score']} | {rec_emoji} {pick['ai_recommendation']}")
             print(f"   Price: ${pick['current_price']} | Upside: {pick['target_upside']}%")
             print(f"   Quant: {pick['quant_grade']}")

@@ -2,21 +2,13 @@ import logging
 import os
 import time
 import random
-from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
 import requests
 
-try:
-    from dotenv import load_dotenv
-except Exception:  # pragma: no cover
-    load_dotenv = None
+from utils.env import load_env
 
-if load_dotenv:
-    load_dotenv()
-    root_env = Path(__file__).resolve().parents[1] / ".env"
-    if root_env.exists():
-        load_dotenv(root_env)
+load_env()
 
 logger = logging.getLogger(__name__)
 
@@ -163,6 +155,117 @@ class FMPClient:
 
     def treasury_rates(self) -> List[Dict[str, Any]]:
         data = self.get_json("/stable/treasury-rates")
+        return data if isinstance(data, list) else []
+
+    # =========================================================================
+    # Index Constituents Methods (S&P 500)
+    # =========================================================================
+
+    def get_sp500_constituents(self) -> List[Dict[str, Any]]:
+        """
+        Get the current S&P 500 constituents list.
+        
+        Returns:
+            List of dicts with keys: symbol, name, sector, subSector, 
+            headQuarter, dateFirstAdded, cik, founded
+        """
+        data = self.get_json("/api/v3/sp500_constituent")
+        return data if isinstance(data, list) else []
+
+    def get_historical_sp500_constituents(self, date: Optional[str] = None) -> List[str]:
+        """
+        Get S&P 500 constituents as of a specific date.
+        
+        This method fetches historical changes (additions/removals) and filters
+        them to return only symbols that were in the index on the given date.
+        
+        Args:
+            date: Target date in YYYY-MM-DD format. If None, returns current constituents.
+            
+        Returns:
+            List of ticker symbols that were in S&P 500 on the given date.
+            
+        Note on Delisted Stocks:
+            Some returned symbols may be delisted (e.g., merged, bankrupt).
+            The historical_price_full() method handles these gracefully by
+            returning an empty dict if no data is available. Always check
+            for empty responses when fetching price data for historical symbols.
+        """
+        if date is None:
+            # Return current constituents
+            constituents = self.get_sp500_constituents()
+            return [c.get("symbol") for c in constituents if c.get("symbol")]
+        
+        # Fetch historical changes
+        # FMP API: /stable/historical-sp500-constituent
+        historical = self.get_json("/stable/historical-sp500-constituent")
+        
+        if not isinstance(historical, list):
+            logger.warning("Failed to fetch historical S&P 500 constituents")
+            return []
+        
+        # Start with current constituents
+        current = self.get_sp500_constituents()
+        current_symbols = set(c.get("symbol") for c in current if c.get("symbol"))
+        
+        # Process historical changes to reconstruct the index at the target date
+        # Each record has: symbol, dateAdded (when added), dateRemoved (when removed, or None)
+        target_symbols = set()
+        
+        for record in historical:
+            symbol = record.get("symbol")
+            date_added = record.get("dateAdded") or record.get("addedDate") or ""
+            date_removed = record.get("dateRemoved") or record.get("removedDate") or ""
+            
+            if not symbol:
+                continue
+            
+            # Check if symbol was in index on target date
+            # Was added before or on target date AND (not removed OR removed after target date)
+            was_added = date_added <= date if date_added else False
+            was_removed = date_removed and date_removed <= date
+            
+            if was_added and not was_removed:
+                target_symbols.add(symbol)
+        
+        # Also check current constituents (they might not have dateAdded in historical)
+        for c in current:
+            symbol = c.get("symbol")
+            date_added = c.get("dateFirstAdded") or ""
+            
+            if not symbol:
+                continue
+                
+            # If dateFirstAdded is before target date, include it
+            if date_added and date_added <= date:
+                target_symbols.add(symbol)
+            elif not date_added:
+                # If no date info, assume it was in index (conservative approach)
+                # You may want to exclude these for strict historical accuracy
+                pass
+        
+        return sorted(list(target_symbols))
+
+    def get_stock_list(self) -> List[Dict[str, Any]]:
+        """
+        Get the full list of available stocks.
+        
+        Returns:
+            List of dicts with keys: symbol, name, price, exchange, exchangeShortName, type
+        """
+        data = self.get_json("/api/v3/stock/list")
+        return data if isinstance(data, list) else []
+
+    def get_delisted_companies(self) -> List[Dict[str, Any]]:
+        """
+        Get list of delisted companies.
+        
+        Useful for handling historical symbols that are no longer trading.
+        
+        Returns:
+            List of dicts with keys: symbol, companyName, exchange, delistedDate
+        """
+        data = self.get_json("/api/v3/delisted-companies")
         return data if isinstance(data, list) else []
 
 
