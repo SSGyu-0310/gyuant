@@ -36,7 +36,7 @@ ORDER BY date ASC;
 SELECT payload_json
 FROM market_documents
 WHERE doc_type = ? AND lang = ? AND model = ?
-ORDER BY as_of_date DESC
+ORDER BY as_of_date DESC, updated_at DESC
 LIMIT 1;
 ```
 인덱스: `idx_market_docs_type_date`

@@ -29,6 +29,7 @@ load_env()
 
 from utils.fmp_client import get_fmp_client, FMPClient
 from utils.symbols import to_fmp_symbol
+from backtest.db_schema import init_db
 
 # Thread-local FMP client to keep requests.Session isolated per worker.
 _THREAD_LOCAL = threading.local()

@@ -14,8 +14,8 @@ FMP 기반 데이터 수집/조회가 기본 경로가 되도록 안정화하고
 
 ## 구현 가이드 (미완 항목 상세)
 ### 1) API 키/환경 변수 관리
-- `.env` 필수 키: `FMP_API_KEY`, 선택 키: `FMP_BASE_URL`, `FMP_MAX_RETRIES`, `FMP_BACKOFF_BASE`, `FMP_BACKOFF_MAX`, `FMP_TIMEOUT`.
-- 앱 시작 시 키 유효성 사전 체크: 비어있으면 경고 후 **필수 파이프라인 중단**.
+- `.env` 필수 키: `FMP_API_KEY`, 선택 키: `FMP_BASE_URL`, `FMP_MAX_RETRIES`, `FMP_BACKOFF_BASE`, `FMP_BACKOFF_MAX`.
+- 키 유효성 체크: 현재는 경고만 출력하며 파이프라인은 계속 진행됩니다.
 - 로그에는 키 일부 마스킹, 원문 출력 금지.
 - 키 교체/만료 테스트 절차 문서화(운영 체크리스트에 포함).
 

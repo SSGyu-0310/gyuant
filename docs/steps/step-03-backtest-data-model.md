@@ -7,6 +7,14 @@
 - 포함: 백테스트용 핵심 테이블 설계, point-in-time 규칙 정의, 품질 체크 기준.
 - 제외: 백테스트 엔진 로직 구현(이는 Step 4).
 
+## 현재 구현 스냅샷 (코드 기준)
+런타임 SQLite 스키마(`backtest/db_schema.py`)에는 아래 테이블만 존재합니다:
+- `bt_prices_daily`, `bt_universe_snapshot`
+- `bt_signal_definitions`, `bt_signals`
+- `bt_runs`, `bt_run_metrics`, `bt_run_equity_curve`, `bt_run_positions`, `bt_run_trades`
+
+`bt_fundamentals` 및 `bt_alpha_*` 계열 테이블은 아직 스키마에 포함되어 있지 않습니다.
+
 ## 핵심 원칙
 - Look-ahead bias 금지: 모든 지표/시그널은 `as_of_date` 이전 데이터로 계산.
 - Survivorship bias 최소화: 과거 시점 유니버스 스냅샷을 보존.
@@ -98,15 +106,16 @@
 - PK: (`signal_id`, `signal_version`, `as_of_date`, `ticker`)
 - 인덱스: (`as_of_date`, `signal_id`)
 
-### 5) `bt_fundamentals` (선택, 권장)
+### 5) `bt_fundamentals` (선택, 권장, **미구현**)
 - 목적: 가치 지표의 point-in-time 저장
 - 컬럼 예시: `as_of_date`, `ticker`, `pe_ratio`, `pb_ratio`, `revenue_growth`, `roe`, `market_cap`, `source`
 - PK: (`as_of_date`, `ticker`)
 
 ### 6) `bt_runs`
 - 목적: 백테스트 실행 메타
-- 컬럼: `run_id`, `signal_id`, `signal_version`, `config_json`, `as_of_date`, `start_date`, `end_date`,
-  `top_n`, `hold_period_days`, `rebalance_freq`, `status`, `created_at`, `finished_at`, `error`
+- 컬럼: `run_id`, `signal_id`, `signal_version`, `alpha_id`, `alpha_version`, `config_json`,
+  `as_of_date`, `start_date`, `end_date`, `top_n`, `hold_period_days`, `rebalance_freq`,
+  `transaction_cost_bps`, `status`, `created_at`, `finished_at`, `error`
 - PK: (`run_id`)
 - 인덱스: (`as_of_date`), (`status`)
 
@@ -117,7 +126,7 @@
 
 ### 8) `bt_run_equity_curve`
 - 목적: 일별 포트폴리오 시계열
-- 컬럼: `run_id`, `date`, `equity`, `returns`
+- 컬럼: `run_id`, `date`, `equity`, `returns`, `drawdown`
 - PK: (`run_id`, `date`)
 
 ### 9) `bt_run_positions`
