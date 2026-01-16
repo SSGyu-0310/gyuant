@@ -630,18 +630,48 @@ def get_table_counts() -> dict:
 
 
 if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Gyuant Database Schema Manager")
+    parser.add_argument(
+        "--reset",
+        action="store_true",
+        help="DROP all existing tables and recreate them (WARNING: Data loss)",
+    )
+    parser.add_argument(
+        "--check", action="store_true", help="Show table row counts and exit"
+    )
+
+    args = parser.parse_args()
+
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
     )
 
-    print("🐘 PostgreSQL Multi-Schema Database Initialization")
+    print("🐘 PostgreSQL Multi-Schema Database Manager")
     print("=" * 60)
 
     try:
-        init_db()
-        counts = get_table_counts()
-        print("\n📊 Table Row Counts:")
-        for table, count in counts.items():
-            print(f"   {table}: {count}")
+        if args.check:
+            counts = get_table_counts()
+            print("\n📊 Table Row Counts:")
+            for table, count in counts.items():
+                print(f"   {table}: {count}")
+        else:
+            if args.reset:
+                print("⚠️  WARNING: You are about to DROP ALL TABLES.")
+                confirm = input("Are you sure? (yes/no): ")
+                if confirm.lower() != "yes":
+                    print("❌ Operation cancelled.")
+                    exit(1)
+
+            init_db(drop_existing=args.reset)
+            
+            counts = get_table_counts()
+            print("\n📊 Table Row Counts:")
+            for table, count in counts.items():
+                print(f"   {table}: {count}")
+                
     except Exception as e:
         print(f"❌ Error: {e}")
+
