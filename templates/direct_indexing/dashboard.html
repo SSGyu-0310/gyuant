@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="container mx-auto px-4 py-8">
+    <h1 class="text-3xl font-bold mb-8">Direct Indexing Dashboard</h1>
+    
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+        <div class="bg-white p-6 rounded-lg shadow-md">
+            <h2 class="text-xl font-semibold mb-4">Create Portfolio</h2>
+            <form id="portfolioForm" class="space-y-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700">Portfolio Name</label>
+                    <input type="text" name="name" class="mt-1 block w-full border-gray-300 rounded-md shadow-sm" required>
+                </div>
+                
+                <div>
+                    <label class="block text-sm font-medium text-gray-700">Benchmark</label>
+                    <select name="benchmark" class="mt-1 block w-full border-gray-300 rounded-md shadow-sm">
+                        <option value="SPY">S&P 500 (SPY)</option>
+                        <option value="QQQ">NASDAQ 100 (QQQ)</option>
+                    </select>
+                </div>
+                
+                <div>
+                    <label class="block text-sm font-medium text-gray-700">Initial Capital</label>
+                    <input type="number" name="initial_capital" value="100000" class="mt-1 block w-full border-gray-300 rounded-md shadow-sm">
+                </div>
+                
+                <div>
+                    <label class="block text-sm font-medium text-gray-700">Initial Holdings (JSON)</label>
+                    <textarea name="holdings" rows="4" class="mt-1 block w-full border-gray-300 rounded-md shadow-sm">{"AAPL": 0.1, "MSFT": 0.1}</textarea>
+                    <p class="text-xs text-gray-500 mt-1">Example: {"AAPL": 0.1, "MSFT": 0.1}</p>
+                </div>
+                
+                <button type="submit" class="w-full bg-green-600 text-white py-2 px-4 rounded-md hover:bg-green-700 transition">
+                    Create Portfolio
+                </button>
+            </form>
+        </div>
+        
+        <div class="bg-white p-6 rounded-lg shadow-md">
+            <h2 class="text-xl font-semibold mb-4">Your Portfolios</h2>
+            <div id="portfolioList" class="space-y-2">
+                <p class="text-gray-500">No portfolios yet.</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+document.getElementById('portfolioForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const formData = new FormData(e.target);
+    const data = Object.fromEntries(formData.entries());
+    
+    try {
+        data.holdings = JSON.parse(data.holdings);
+    } catch (e) {
+        alert('Invalid Holdings JSON');
+        return;
+    }
+    
+    try {
+        const res = await fetch('/api/direct-indexing/portfolios', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(data)
+        });
+        const result = await res.json();
+        if (result.error) throw new Error(result.error);
+        
+        alert(`Portfolio created! ID: ${result.portfolio_id}`);
+        const list = document.getElementById('portfolioList');
+        list.innerHTML = `<div class="p-3 bg-gray-50 rounded border border-gray-200">
+            <div class="font-medium">${data.name}</div>
+            <div class="text-sm text-gray-600">${data.benchmark} - $${data.initial_capital}</div>
+        </div>` + list.innerHTML;
+    } catch (err) {
+        alert('Error creating portfolio: ' + err);
+    }
+});
+</script>
+{% endblock %}

@@ -3,10 +3,11 @@
 """
 Gyuant Market Database Schema for PostgreSQL (Multi-Schema)
 
-Schema Organization:
-- market: 운영 데이터 (가격, 종목 마스터)
-- backtest: 백테스트 전용 데이터 (PIT 가격, 유니버스 스냅샷)
-- factors: 팩터/다이렉트 인덱싱 데이터 (볼륨 분석, 스마트 머니)
+ Schema Organization:
+ - market: 운영 데이터 (가격, 종목 마스터)
+ - backtest: 백테스트 전용 데이터 (PIT 가격, 유니버스 스냅샷, 실행 결과)
+ - factors: 팩터 데이터 (볼륨 분석, 스마트 머니)
+ - direct_indexing: 다이렉트 인덱싱 데이터 (포트폴리오, 포지션, 세금 로트)
 """
 
 import os
@@ -63,7 +64,9 @@ def get_engine() -> Engine:
             pool_recycle=1800,
             echo=os.getenv("SQL_ECHO", "").lower() == "true",
         )
-        logger.info(f"PostgreSQL engine created: {url.split('@')[1] if '@' in url else url}")
+        logger.info(
+            f"PostgreSQL engine created: {url.split('@')[1] if '@' in url else url}"
+        )
     return _engine
 
 
@@ -79,11 +82,13 @@ def get_session():
 # MARKET SCHEMA - 운영 데이터
 # =============================================================================
 
+
 class MarketTicker(Base):
     """종목 마스터 테이블 (market.tickers)"""
+
     __tablename__ = "tickers"
     __table_args__ = {"schema": "market"}
-    
+
     symbol = Column(String(20), primary_key=True, comment="종목 심볼")
     name = Column(String(255), comment="회사명")
     sector = Column(String(100), comment="섹터")
@@ -101,13 +106,14 @@ class MarketTicker(Base):
 
 class MarketDailyPrice(Base):
     """일봉 가격 테이블 (market.daily_prices)"""
+
     __tablename__ = "daily_prices"
     __table_args__ = (
         Index("idx_market_prices_date", "date"),
         Index("idx_market_prices_symbol_date", "symbol", "date"),
-        {"schema": "market"}
+        {"schema": "market"},
     )
-    
+
     symbol = Column(String(20), primary_key=True)
     date = Column(Date, primary_key=True)
     open = Column(Numeric(15, 4))
@@ -124,12 +130,10 @@ class MarketDailyPrice(Base):
 
 class MarketETFFlow(Base):
     """ETF 자금 흐름 (market.etf_flows)"""
+
     __tablename__ = "etf_flows"
-    __table_args__ = (
-        Index("idx_etf_flows_date", "as_of_date"),
-        {"schema": "market"}
-    )
-    
+    __table_args__ = (Index("idx_etf_flows_date", "as_of_date"), {"schema": "market"})
+
     ticker = Column(String(20), primary_key=True)
     as_of_date = Column(Date, primary_key=True)
     name = Column(String(255))
@@ -150,14 +154,13 @@ class MarketETFFlow(Base):
 # BACKTEST SCHEMA - 백테스트 전용 (PIT)
 # =============================================================================
 
+
 class BacktestPrice(Base):
     """백테스트용 가격 데이터 (backtest.prices_daily)"""
+
     __tablename__ = "prices_daily"
-    __table_args__ = (
-        Index("idx_bt_prices_date", "date"),
-        {"schema": "backtest"}
-    )
-    
+    __table_args__ = (Index("idx_bt_prices_date", "date"), {"schema": "backtest"})
+
     ticker = Column(String(20), primary_key=True)
     date = Column(Date, primary_key=True)
     open = Column(Numeric(15, 4))
@@ -171,12 +174,13 @@ class BacktestPrice(Base):
 
 class BacktestUniverse(Base):
     """유니버스 스냅샷 (backtest.universe_snapshot)"""
+
     __tablename__ = "universe_snapshot"
     __table_args__ = (
         Index("idx_bt_universe_asof", "as_of_date"),
-        {"schema": "backtest"}
+        {"schema": "backtest"},
     )
-    
+
     as_of_date = Column(Date, primary_key=True)
     ticker = Column(String(20), primary_key=True)
     name = Column(String(255))
@@ -189,14 +193,17 @@ class BacktestUniverse(Base):
 
 class BacktestFinancialStatement(Base):
     """재무제표 (PIT) (backtest.financial_statements)"""
+
     __tablename__ = "financial_statements"
     __table_args__ = (
         Index("idx_bt_fin_filing", "filing_date"),
         Index("idx_bt_fin_symbol_filing", "symbol", "filing_date"),
-        CheckConstraint("filing_date >= period_end_date", name="chk_filing_after_period"),
-        {"schema": "backtest"}
+        CheckConstraint(
+            "filing_date >= period_end_date", name="chk_filing_after_period"
+        ),
+        {"schema": "backtest"},
     )
-    
+
     symbol = Column(String(20), primary_key=True)
     period_end_date = Column(Date, primary_key=True)
     statement_type = Column(String(20), primary_key=True)
@@ -217,46 +224,167 @@ class BacktestFinancialStatement(Base):
     ingested_at = Column(DateTime, server_default=func.now())
 
 
+class BacktestSignalDefinition(Base):
+    """백테스트 신호 정의 (backtest.signal_definitions)"""
+
+    __tablename__ = "signal_definitions"
+    __table_args__ = {"schema": "backtest"}
+
+    signal_id = Column(String(50), primary_key=True)
+    version = Column(String(20), primary_key=True)
+    name = Column(String(255))
+    description = Column(Text)
+    params_schema_json = Column(Text)  # JSON string for parameters schema
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class BacktestSignal(Base):
+    """백테스트 신호 데이터 (backtest.signals)"""
+
+    __tablename__ = "signals"
+    __table_args__ = (
+        Index("idx_bt_signals_asof", "as_of_date"),
+        Index("idx_bt_signals_id_asof", "signal_id", "signal_version", "as_of_date"),
+        {"schema": "backtest"},
+    )
+
+    signal_id = Column(String(50), nullable=False)
+    signal_version = Column(String(20), nullable=False)
+    as_of_date = Column(Date, nullable=False)
+    ticker = Column(String(20), nullable=False)
+    signal_value = Column(Numeric(10, 4))
+    signal_rank = Column(Integer)
+    meta_json = Column(Text)  # Additional metadata as JSON
+
+    __mapper_args__ = {"primary_key": [signal_id, signal_version, as_of_date, ticker]}
+
+
 class BacktestRun(Base):
     """백테스트 실행 기록 (backtest.runs)"""
+
     __tablename__ = "runs"
     __table_args__ = (
         Index("idx_bt_runs_status", "status"),
-        {"schema": "backtest"}
+        Index("idx_bt_runs_asof", "as_of_date"),
+        {"schema": "backtest"},
     )
-    
+
     run_id = Column(String(50), primary_key=True)
-    strategy_name = Column(String(100), nullable=False)
-    strategy_version = Column(String(20), default="1.0")
+    strategy_name = Column(String(100))  # Strategy name (required by existing DB)
+    signal_id = Column(String(50))
+    signal_version = Column(String(20))
+    alpha_id = Column(String(50))
+    alpha_version = Column(String(20))
+    as_of_date = Column(Date, nullable=False, comment="Backtest as-of date (PIT)")
     start_date = Column(Date, nullable=False)
     end_date = Column(Date, nullable=False)
     universe = Column(String(50))
-    initial_capital = Column(Numeric(15, 2), default=100000)
+    config_json = Column(Text)  # Full configuration as JSON
     top_n = Column(Integer)
-    rebalance_freq = Column(String(20), default="monthly")
+    hold_period_days = Column(Integer)
+    rebalance_freq = Column(String(20), default="quarterly")
     transaction_cost_bps = Column(Numeric(6, 2), default=10)
-    total_return = Column(Numeric(10, 4))
-    cagr = Column(Numeric(10, 4))
-    sharpe_ratio = Column(Numeric(10, 4))
-    max_drawdown = Column(Numeric(10, 4))
-    status = Column(String(20), default="pending")
+    status = Column(String(20), default="queued")
     error_message = Column(Text)
     created_at = Column(DateTime, server_default=func.now())
     finished_at = Column(DateTime)
+
+    __table_args__ = (
+        Index("idx_bt_runs_status", "status"),
+        Index("idx_bt_runs_asof", "as_of_date"),
+        CheckConstraint(
+            "status IN ('queued', 'running', 'finished', 'failed')",
+            name="chk_bt_status",
+        ),
+        {"schema": "backtest"},
+    )
+
+
+class BacktestRunMetrics(Base):
+    """백테스트 실행 성과 지표 (backtest.run_metrics)"""
+
+    __tablename__ = "run_metrics"
+    __table_args__ = {"schema": "backtest"}
+
+    run_id = Column(String(50), primary_key=True)
+    cagr = Column(Numeric(10, 4))
+    volatility = Column(Numeric(10, 4))
+    sharpe = Column(Numeric(10, 4))
+    max_drawdown = Column(Numeric(10, 4))
+    total_return = Column(Numeric(10, 4))
+    win_rate = Column(Numeric(6, 4))
+    turnover = Column(Numeric(10, 4))
+    created_at = Column(DateTime, server_default=func.now())
+
+
+class BacktestEquityCurve(Base):
+    """백테스트 자본 곡선 (backtest.equity_curve)"""
+
+    __tablename__ = "equity_curve"
+    __table_args__ = (
+        Index("idx_bt_equity_run_date", "run_id", "date"),
+        {"schema": "backtest"},
+    )
+
+    run_id = Column(String(50), nullable=False)
+    date = Column(Date, nullable=False)
+    equity = Column(Numeric(15, 2))
+    cash = Column(Numeric(15, 2))
+    returns = Column(Numeric(10, 4))
+    drawdown = Column(Numeric(10, 4))
+
+    __mapper_args__ = {"primary_key": [run_id, date]}
+
+
+class BacktestPosition(Base):
+    """백테스트 포지션 추적 (backtest.positions)"""
+
+    __tablename__ = "positions"
+    __table_args__ = (Index("idx_bt_positions_run", "run_id"), {"schema": "backtest"})
+
+    run_id = Column(String(50), nullable=False)
+    ticker = Column(String(20), nullable=False)
+    entry_date = Column(Date, nullable=False)
+    entry_price = Column(Numeric(15, 4))
+    exit_date = Column(Date)
+    exit_price = Column(Numeric(15, 4))
+    weight = Column(Numeric(10, 6))
+    shares = Column(Numeric(15, 4))
+
+    __mapper_args__ = {"primary_key": [run_id, ticker, entry_date]}
+
+
+class BacktestTrade(Base):
+    """백테스트 거래 내역 (backtest.trades)"""
+
+    __tablename__ = "trades"
+    __table_args__ = (
+        Index("idx_bt_trades_run_date", "run_id", "trade_date"),
+        {"schema": "backtest"},
+    )
+
+    run_id = Column(String(50), nullable=False)
+    trade_id = Column(String(100), primary_key=True)
+    ticker = Column(String(20), nullable=False)
+    side = Column(String(10), nullable=False)  # 'buy', 'sell'
+    trade_date = Column(Date, nullable=False)
+    price = Column(Numeric(15, 4))
+    shares = Column(Numeric(15, 4))
+    fee = Column(Numeric(10, 2))
 
 
 # =============================================================================
 # FACTORS SCHEMA - 팩터/다이렉트 인덱싱
 # =============================================================================
 
+
 class FactorVolumeAnalysis(Base):
     """볼륨 분석 팩터 (factors.volume_analysis)"""
+
     __tablename__ = "volume_analysis"
-    __table_args__ = (
-        Index("idx_factor_vol_date", "as_of_date"),
-        {"schema": "factors"}
-    )
-    
+    __table_args__ = (Index("idx_factor_vol_date", "as_of_date"), {"schema": "factors"})
+
     ticker = Column(String(20), primary_key=True)
     as_of_date = Column(Date, primary_key=True)
     name = Column(String(255))
@@ -276,12 +404,10 @@ class FactorVolumeAnalysis(Base):
 
 class FactorSmartMoneyPick(Base):
     """스마트 머니 추천 (factors.smart_money_picks)"""
+
     __tablename__ = "smart_money_picks"
-    __table_args__ = (
-        Index("idx_factor_sm_date", "run_date"),
-        {"schema": "factors"}
-    )
-    
+    __table_args__ = (Index("idx_factor_sm_date", "run_date"), {"schema": "factors"})
+
     run_date = Column(Date, primary_key=True)
     rank = Column(Integer, primary_key=True)
     ticker = Column(String(20), nullable=False)
@@ -304,12 +430,13 @@ class FactorSmartMoneyPick(Base):
 
 class FactorFundamental(Base):
     """펀더멘탈 팩터 (factors.fundamentals)"""
+
     __tablename__ = "fundamentals"
     __table_args__ = (
         Index("idx_factor_fund_date", "as_of_date"),
-        {"schema": "factors"}
+        {"schema": "factors"},
     )
-    
+
     ticker = Column(String(20), primary_key=True)
     as_of_date = Column(Date, primary_key=True)
     pe_ratio = Column(Numeric(10, 4))
@@ -328,8 +455,105 @@ class FactorFundamental(Base):
 
 
 # =============================================================================
+# DIRECT INDEXING SCHEMA - 다이렉트 인덱싱
+# =============================================================================
+
+
+class DirectIndexingPortfolio(Base):
+    """다이렉트 인덱싱 포트폴리오 마스터 (direct_indexing.portfolios)"""
+
+    __tablename__ = "portfolios"
+    __table_args__ = {"schema": "direct_indexing"}
+
+    portfolio_id = Column(String(50), primary_key=True)
+    name = Column(String(255))
+    benchmark = Column(String(20))
+    base_universe = Column(String(50))
+    weighting_method = Column(String(20))  # 'equal', 'market_cap', 'custom'
+    rebalance_freq = Column(String(20), default="quarterly")
+    initial_capital = Column(Numeric(15, 2), default=100000)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class DirectIndexingPosition(Base):
+    """다이렉트 인덱싱 현재 포지션 (direct_indexing.positions)"""
+
+    __tablename__ = "positions"
+    __table_args__ = (
+        Index("idx_di_positions_portfolio", "portfolio_id"),
+        Index("idx_di_positions_date", "portfolio_id", "as_of_date"),
+        {"schema": "direct_indexing"},
+    )
+
+    portfolio_id = Column(String(50), nullable=False)
+    as_of_date = Column(Date, nullable=False)
+    ticker = Column(String(20), nullable=False)
+    shares = Column(Numeric(15, 4))
+    cost_basis = Column(Numeric(15, 2))
+    market_value = Column(Numeric(15, 2))
+    weight = Column(Numeric(10, 6))
+
+    __mapper_args__ = {"primary_key": [portfolio_id, as_of_date, ticker]}
+
+
+class DirectIndexingTaxLot(Base):
+    """세금 로트 추적 (direct_indexing.tax_lots)"""
+
+    __tablename__ = "tax_lots"
+    __table_args__ = (
+        Index("idx_di_taxlots_portfolio", "portfolio_id"),
+        {"schema": "direct_indexing"},
+    )
+
+    lot_id = Column(String(100), primary_key=True)
+    portfolio_id = Column(String(50), nullable=False)
+    ticker = Column(String(20), nullable=False)
+    acquisition_date = Column(Date, nullable=False)
+    shares = Column(Numeric(15, 4))
+    cost_basis = Column(Numeric(15, 2))
+    wash_sale_until = Column(Date)  # Wash sale lock period end date
+
+
+class DirectIndexingRebalanceLog(Base):
+    """리밸런스 로그 (direct_indexing.rebalance_logs)"""
+
+    __tablename__ = "rebalance_logs"
+    __table_args__ = (
+        Index("idx_di_rebal_portfolio", "portfolio_id"),
+        {"schema": "direct_indexing"},
+    )
+
+    rebalance_id = Column(String(100), primary_key=True)
+    portfolio_id = Column(String(50), nullable=False)
+    as_of_date = Column(Date, nullable=False)
+    action_json = Column(Text)  # Rebalance actions as JSON
+    created_at = Column(DateTime, server_default=func.now())
+
+
+class DirectIndexingTlhEvent(Base):
+    """Tax-loss harvesting 이벤트 (direct_indexing.tlh_events)"""
+
+    __tablename__ = "tlh_events"
+    __table_args__ = (
+        Index("idx_di_tlh_portfolio", "portfolio_id"),
+        {"schema": "direct_indexing"},
+    )
+
+    event_id = Column(String(100), primary_key=True)
+    portfolio_id = Column(String(50), nullable=False)
+    ticker = Column(String(20), nullable=False)
+    loss_amount = Column(Numeric(15, 2))
+    sale_date = Column(Date, nullable=False)
+    replacement_ticker = Column(String(20))
+    wash_sale_flag = Column(Boolean, default=False)
+    created_at = Column(DateTime, server_default=func.now())
+
+
+# =============================================================================
 # Database Initialization
 # =============================================================================
+
 
 def create_schemas(engine: Engine):
     """Create all schemas if they don't exist."""
@@ -337,32 +561,51 @@ def create_schemas(engine: Engine):
         conn.execute(text("CREATE SCHEMA IF NOT EXISTS market"))
         conn.execute(text("CREATE SCHEMA IF NOT EXISTS backtest"))
         conn.execute(text("CREATE SCHEMA IF NOT EXISTS factors"))
+        conn.execute(text("CREATE SCHEMA IF NOT EXISTS direct_indexing"))
         conn.commit()
-    logger.info("✅ Schemas created: market, backtest, factors")
+    logger.info("✅ Schemas created: market, backtest, factors, direct_indexing")
+
+
+def ensure_backtest_runs_columns(engine: Engine):
+    """Add missing columns to backtest.runs for backward compatibility."""
+    statements = [
+        "ALTER TABLE backtest.runs ADD COLUMN IF NOT EXISTS signal_id VARCHAR(50);",
+        "ALTER TABLE backtest.runs ADD COLUMN IF NOT EXISTS signal_version VARCHAR(20);",
+        "ALTER TABLE backtest.runs ADD COLUMN IF NOT EXISTS alpha_id VARCHAR(50);",
+        "ALTER TABLE backtest.runs ADD COLUMN IF NOT EXISTS alpha_version VARCHAR(20);",
+        "ALTER TABLE backtest.runs ADD COLUMN IF NOT EXISTS top_n INTEGER;",
+        "ALTER TABLE backtest.runs ADD COLUMN IF NOT EXISTS hold_period_days INTEGER;",
+        "ALTER TABLE backtest.runs ADD COLUMN IF NOT EXISTS transaction_cost_bps NUMERIC(6, 2) DEFAULT 10;",
+    ]
+    with engine.begin() as conn:
+        for stmt in statements:
+            conn.execute(text(stmt))
+    logger.info("✅ Ensured backtest.runs compatibility columns exist")
 
 
 def init_db(drop_existing: bool = False) -> bool:
     """Initialize all tables in the PostgreSQL database."""
     try:
         engine = get_engine()
-        
+
         # Create schemas first
         create_schemas(engine)
-        
+
         if drop_existing:
             logger.warning("⚠️ Dropping all existing tables...")
             Base.metadata.drop_all(engine)
-        
+
         Base.metadata.create_all(engine)
+        ensure_backtest_runs_columns(engine)
         logger.info("✅ PostgreSQL database initialized successfully")
-        
+
         # Log created tables by schema
         for table in Base.metadata.sorted_tables:
             schema = table.schema or "public"
             logger.info(f"   📦 {schema}.{table.name}")
-        
+
         return True
-        
+
     except Exception as e:
         logger.error(f"❌ Failed to initialize database: {e}")
         raise
@@ -371,8 +614,8 @@ def init_db(drop_existing: bool = False) -> bool:
 def get_table_counts() -> dict:
     """Get row counts for all tables."""
     engine = get_engine()
-    counts = {}
-    
+    counts: dict = {}
+
     for table in Base.metadata.sorted_tables:
         try:
             schema = table.schema or "public"
@@ -381,20 +624,19 @@ def get_table_counts() -> dict:
                 result = conn.execute(text(f"SELECT COUNT(*) FROM {full_name}"))
                 counts[full_name] = result.scalar()
         except Exception:
-            counts[full_name] = 0
-    
+            counts[f"{table.schema or 'public'}.{table.name}"] = 0
+
     return counts
 
 
 if __name__ == "__main__":
     logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(levelname)s - %(message)s'
+        level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
     )
-    
+
     print("🐘 PostgreSQL Multi-Schema Database Initialization")
     print("=" * 60)
-    
+
     try:
         init_db()
         counts = get_table_counts()
