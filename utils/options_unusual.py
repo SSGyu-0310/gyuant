@@ -104,19 +104,21 @@ def score_options_flow(raw_flow: List[Dict[str, Any]], source_file: Path, cfg: D
         combined["unusual_tags"] = tags
         records_out.append(combined)
 
-    event = {
-        "ts": _now_iso(),
-        "level": "info",
-        "event": "options_unusual_scoring",
-        "source_file": str(source_file),
-        "records_in": len(raw_flow or []),
-        "records_out": len(records_out),
-        "missing_fields_count": missing_count,
-    }
-    try:
-        request_logger.info(json.dumps(event, ensure_ascii=False))
-    except Exception:
-        logger.info(event)
+    # Only log in verbose mode (DEBUG_LOGS=true)
+    if os.getenv("DEBUG_LOGS", "").lower() == "true":
+        event = {
+            "ts": _now_iso(),
+            "level": "info",
+            "event": "options_unusual_scoring",
+            "source_file": str(source_file),
+            "records_in": len(raw_flow or []),
+            "records_out": len(records_out),
+            "missing_fields_count": missing_count,
+        }
+        try:
+            request_logger.info(json.dumps(event, ensure_ascii=False))
+        except Exception:
+            logger.info(event)
     return records_out
 
 

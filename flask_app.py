@@ -43,6 +43,8 @@ if not request_logger.handlers:
     request_logger.setLevel(logging.INFO)
     request_logger.propagate = False
 
+# Werkzeug 기본 로그 비활성화 (우리가 직접 로그 출력)
+logging.getLogger("werkzeug").setLevel(logging.WARNING)
 
 from backtest.api.routes import bp as backtest_bp
 from direct_indexing.api.routes import bp as di_bp
@@ -482,6 +484,9 @@ def _generate_ai_summary(ticker: str, lang: str) -> Dict[str, Any]:
 
 
 def _log_perf_component(component: str, started: float):
+    # Only log in verbose mode (DEBUG_LOGS=true)
+    if os.getenv("DEBUG_LOGS", "").lower() != "true":
+        return
     try:
         event = {
             "ts": _now_iso(),
@@ -517,38 +522,45 @@ def _after_request(response):
         rid = getattr(g, "request_id", None) or uuid.uuid4().hex
         response.headers["X-Request-Id"] = rid
         start = getattr(g, "_start_time", None)
-        latency_ms = None
+        latency_ms = 0
         if start is not None:
             latency_ms = round((time.perf_counter() - start) * 1000, 2)
-        event = {
-            "ts": _now_iso(),
-            "level": "info",
-            "event": "http_request",
-            "request_id": rid,
-            "method": request.method,
-            "path": request.path,
-            "status": response.status_code,
-            "latency_ms": latency_ms,
-        }
-        request_logger.info(json.dumps(event, ensure_ascii=False))
-    except Exception:
-        # Do not block response on logging failures
-        pass
-    try:
-        stats = get_perf_stats()
-        perf_event = {
-            "ts": _now_iso(),
-            "level": "info",
-            "event": "perf_summary",
-            "request_id": rid,
-            "path": request.path,
-            "fmp_calls": stats.get("fmp_calls", 0),
-            "fmp_batches": stats.get("fmp_batches", 0),
-            "cache_hits": stats.get("cache_hits", 0),
-            "cache_misses": stats.get("cache_misses", 0),
-            "parallel_tasks": stats.get("parallel_tasks", 0),
-        }
-        request_logger.info(json.dumps(perf_event, ensure_ascii=False))
+        
+        # 개발 모드: 간단한 한 줄 로그 (DEBUG_LOGS=true로 상세 로그 활성화)
+        verbose_logs = os.getenv("DEBUG_LOGS", "").lower() == "true"
+        
+        # Skip noisy paths in simple mode
+        skip_paths = {"/favicon.ico", "/status"}
+        status = response.status_code
+        method = request.method
+        path = request.path
+        
+        if verbose_logs:
+            # 상세 JSON 로그 (프로덕션/디버깅용)
+            event = {
+                "ts": _now_iso(),
+                "level": "info",
+                "event": "http_request",
+                "request_id": rid,
+                "method": method,
+                "path": path,
+                "status": status,
+                "latency_ms": latency_ms,
+            }
+            request_logger.info(json.dumps(event, ensure_ascii=False))
+        else:
+            # 개발용 간단 로그
+            if path not in skip_paths:
+                # 상태 코드별 표시
+                if status >= 500:
+                    icon = "❌"
+                elif status >= 400:
+                    icon = "⚠️"
+                elif latency_ms > 1000:
+                    icon = "🐢"  # 느린 요청
+                else:
+                    icon = "✓"
+                print(f"  {icon} {method} {path} → {status} ({latency_ms}ms)")
     except Exception:
         pass
     return response
@@ -1378,7 +1390,7 @@ def get_us_stock_chart(ticker):
         period = request.args.get("period", "1y")
         if period not in ["1mo", "3mo", "6mo", "1y", "2y", "5y", "max"]:
             period = "1y"
-        end_date = datetime.utcnow().date()
+        end_date = datetime.now(timezone.utc).date()
         period_days = {
             "1mo": 30,
             "3mo": 90,
@@ -1642,7 +1654,7 @@ def get_us_macro_analysis():
             {
                 "macro_indicators": macro_indicators,
                 "ai_analysis": ai_analysis,
-                "timestamp": cached.get("timestamp", datetime.utcnow().isoformat()),
+                "timestamp": cached.get("timestamp", datetime.now(timezone.utc).isoformat()),
             }
         )
     except Exception as e:
@@ -1844,23 +1856,25 @@ def top_movers():
         },
         "errors": errors,
     }
-    try:
-        latency_ms = round((time.perf_counter() - start) * 1000, 2)
-        event = {
-            "ts": _now_iso(),
-            "level": "info",
-            "event": "top_movers_api",
-            "request_id": rid,
-            "window": window,
-            "limit": limit,
-            "latency_ms": latency_ms,
-            "rows_read": rows_read,
-            "gainers": len(gainers),
-            "losers": len(losers),
-        }
-        request_logger.info(json.dumps(event, ensure_ascii=False))
-    except Exception:
-        pass
+    # Only log in verbose mode (DEBUG_LOGS=true)
+    if os.getenv("DEBUG_LOGS", "").lower() == "true":
+        try:
+            latency_ms = round((time.perf_counter() - start) * 1000, 2)
+            event = {
+                "ts": _now_iso(),
+                "level": "info",
+                "event": "top_movers_api",
+                "request_id": rid,
+                "window": window,
+                "limit": limit,
+                "latency_ms": latency_ms,
+                "rows_read": rows_read,
+                "gainers": len(gainers),
+                "losers": len(losers),
+            }
+            request_logger.info(json.dumps(event, ensure_ascii=False))
+        except Exception:
+            pass
     return jsonify(payload)
 
 
@@ -2133,23 +2147,25 @@ def get_options_unusual():
         }
         return jsonify(payload), 200
     finally:
-        try:
-            latency_ms = round((time.perf_counter() - start) * 1000, 2)
-            event = {
-                "ts": _now_iso(),
-                "level": "info",
-                "event": "options_unusual_api",
-                "request_id": rid,
-                "ticker": request.args.get("ticker"),
-                "side": request.args.get("side"),
-                "min_score": request.args.get("min_score"),
-                "limit": request.args.get("limit"),
-                "latency_ms": latency_ms,
-                "items_returned": len(locals().get("items", []) or []),
-            }
-            request_logger.info(json.dumps(event, ensure_ascii=False))
-        except Exception:
-            pass
+        # Only log in verbose mode (DEBUG_LOGS=true)
+        if os.getenv("DEBUG_LOGS", "").lower() == "true":
+            try:
+                latency_ms = round((time.perf_counter() - start) * 1000, 2)
+                event = {
+                    "ts": _now_iso(),
+                    "level": "info",
+                    "event": "options_unusual_api",
+                    "request_id": rid,
+                    "ticker": request.args.get("ticker"),
+                    "side": request.args.get("side"),
+                    "min_score": request.args.get("min_score"),
+                    "limit": request.args.get("limit"),
+                    "latency_ms": latency_ms,
+                    "items_returned": len(locals().get("items", []) or []),
+                }
+                request_logger.info(json.dumps(event, ensure_ascii=False))
+            except Exception:
+                pass
 
 
 @app.route("/api/us/ai-summary/<ticker>")
@@ -2255,24 +2271,26 @@ def get_us_ai_summary(ticker):
                 if force:
                     AI_LAST_REGEN[key] = now
 
-    latency_ms = round((time.perf_counter() - start) * 1000, 2)
-    event = {
-        "ts": _now_iso(),
-        "level": "info",
-        "event": "ai_summary",
-        "request_id": rid,
-        "ticker": ticker_clean,
-        "lang": lang,
-        "cached": cached_used,
-        "force": force,
-        "latency_ms": latency_ms,
-        "output_len": len(payload["summary"]) if payload else 0,
-        "truncated": payload["meta"]["truncated"] if payload else False,
-    }
-    try:
-        request_logger.info(json.dumps(event, ensure_ascii=False))
-    except Exception:
-        pass
+    # Only log in verbose mode (DEBUG_LOGS=true)
+    if os.getenv("DEBUG_LOGS", "").lower() == "true":
+        latency_ms = round((time.perf_counter() - start) * 1000, 2)
+        event = {
+            "ts": _now_iso(),
+            "level": "info",
+            "event": "ai_summary",
+            "request_id": rid,
+            "ticker": ticker_clean,
+            "lang": lang,
+            "cached": cached_used,
+            "force": force,
+            "latency_ms": latency_ms,
+            "output_len": len(payload["summary"]) if payload else 0,
+            "truncated": payload["meta"]["truncated"] if payload else False,
+        }
+        try:
+            request_logger.info(json.dumps(event, ensure_ascii=False))
+        except Exception:
+            pass
 
     return jsonify(payload)
 
