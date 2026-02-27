@@ -12,7 +12,7 @@ import traceback
 import uuid
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from typing import Dict, List, Any, Tuple
+from typing import Dict, List, Any, Tuple, Optional
 
 import numpy as np
 import pandas as pd
@@ -21,25 +21,37 @@ from flask import Flask, jsonify, render_template, request, g
 from utils.fmp_client import get_fmp_client
 from utils.logger import setup_logger
 from utils.pipeline_utils import ensure_contracts
-from utils.perf_utils import cache_get_or_set, get_perf_stats, get_request_cache, perf_env_threads_enabled, perf_max_workers
+from utils.perf_utils import (
+    cache_get_or_set,
+    get_perf_stats,
+    get_request_cache,
+    perf_env_threads_enabled,
+    perf_max_workers,
+)
 from utils.symbols import map_symbols_to_fmp, to_fmp_symbol
 from utils.options_unusual import score_options_flow, load_options_raw
 from backtest.db_schema import get_connection
 from collections import defaultdict
 from utils.data_access import get_prices, get_tickers, get_volume_analysis
 
-logger = setup_logger('flask_server', 'server.log')
-request_logger = logging.getLogger('request_logger')
+logger = setup_logger("flask_server", "server.log")
+request_logger = logging.getLogger("request_logger")
 if not request_logger.handlers:
     handler = logging.StreamHandler()
-    handler.setFormatter(logging.Formatter('%(message)s'))
+    handler.setFormatter(logging.Formatter("%(message)s"))
     request_logger.addHandler(handler)
     request_logger.setLevel(logging.INFO)
     request_logger.propagate = False
 
+# Werkzeug 기본 로그 비활성화 (우리가 직접 로그 출력)
+logging.getLogger("werkzeug").setLevel(logging.WARNING)
 
+from backtest.api.routes import bp as backtest_bp
+from direct_indexing.api.routes import bp as di_bp
 
 app = Flask(__name__)
+app.register_blueprint(backtest_bp)
+app.register_blueprint(di_bp)
 
 BASE_DIR = Path(__file__).resolve().parent
 US_DIR = Path(os.getenv("DATA_DIR", BASE_DIR / "us_market")).resolve()
@@ -60,23 +72,22 @@ OPT_VOLUME_LARGE = float(os.getenv("OPT_VOLUME_LARGE", "5000"))
 OPT_IV_HIGH = float(os.getenv("OPT_IV_HIGH", "80"))
 
 
-
 # ------------- Error Handling -------------
 @app.errorhandler(404)
 def not_found_error(error):
     logger.warning(f"404 Error: {request.url}")
-    return jsonify({'error': 'Resource not found', 'path': request.url}), 404
+    return jsonify({"error": "Resource not found", "path": request.url}), 404
 
 
 @app.errorhandler(500)
 def internal_error(error):
     logger.error(f"500 Error: {error}\n{traceback.format_exc()}")
-    return jsonify({'error': 'Internal server error'}), 500
+    return jsonify({"error": "Internal server error"}), 500
 
 
 @app.errorhandler(Exception)
 def handle_exception(e):
-    rid = getattr(g, 'request_id', uuid.uuid4().hex)
+    rid = getattr(g, "request_id", uuid.uuid4().hex)
     event = {
         "ts": _now_iso(),
         "level": "error",
@@ -94,87 +105,296 @@ def handle_exception(e):
         request_logger.error(json.dumps(event, ensure_ascii=False))
     except Exception:
         logger.error(f"Unhandled Exception: {e}\n{traceback.format_exc()}")
-    return jsonify({'error': str(e)}), 500
+    return jsonify({"error": str(e)}), 500
 
 
 # ------------- Static Data / Helpers -------------
 
 # Sector mapping for major US stocks (S&P 500 + popular stocks)
 SECTOR_MAP = {
-    'AAPL': 'Tech', 'MSFT': 'Tech', 'NVDA': 'Tech', 'AVGO': 'Tech', 'ORCL': 'Tech',
-    'CRM': 'Tech', 'AMD': 'Tech', 'ADBE': 'Tech', 'CSCO': 'Tech', 'INTC': 'Tech',
-    'IBM': 'Tech', 'MU': 'Tech', 'QCOM': 'Tech', 'TXN': 'Tech', 'NOW': 'Tech',
-    'AMAT': 'Tech', 'LRCX': 'Tech', 'KLAC': 'Tech', 'SNPS': 'Tech', 'CDNS': 'Tech',
-    'ADI': 'Tech', 'MRVL': 'Tech', 'FTNT': 'Tech', 'PANW': 'Tech', 'CRWD': 'Tech',
-    'SNOW': 'Tech', 'DDOG': 'Tech', 'ZS': 'Tech', 'NET': 'Tech', 'PLTR': 'Tech',
-    'DELL': 'Tech', 'HPQ': 'Tech', 'HPE': 'Tech', 'KEYS': 'Tech', 'SWKS': 'Tech',
-    'BRK-B': 'Fin', 'JPM': 'Fin', 'V': 'Fin', 'MA': 'Fin', 'BAC': 'Fin',
-    'WFC': 'Fin', 'GS': 'Fin', 'MS': 'Fin', 'SPGI': 'Fin', 'AXP': 'Fin',
-    'C': 'Fin', 'BLK': 'Fin', 'SCHW': 'Fin', 'CME': 'Fin', 'CB': 'Fin',
-    'PGR': 'Fin', 'MMC': 'Fin', 'AON': 'Fin', 'ICE': 'Fin', 'MCO': 'Fin',
-    'USB': 'Fin', 'PNC': 'Fin', 'TFC': 'Fin', 'AIG': 'Fin', 'MET': 'Fin',
-    'PRU': 'Fin', 'ALL': 'Fin', 'TRV': 'Fin', 'COIN': 'Fin', 'HOOD': 'Fin',
-    'LLY': 'Health', 'UNH': 'Health', 'JNJ': 'Health', 'ABBV': 'Health', 'MRK': 'Health',
-    'PFE': 'Health', 'TMO': 'Health', 'ABT': 'Health', 'DHR': 'Health', 'BMY': 'Health',
-    'AMGN': 'Health', 'GILD': 'Health', 'VRTX': 'Health', 'ISRG': 'Health', 'MDT': 'Health',
-    'SYK': 'Health', 'BSX': 'Health', 'REGN': 'Health', 'ZTS': 'Health', 'ELV': 'Health',
-    'CI': 'Health', 'HUM': 'Health', 'CVS': 'Health', 'MCK': 'Health', 'CAH': 'Health',
-    'GEHC': 'Health', 'DXCM': 'Health', 'IQV': 'Health', 'BIIB': 'Health', 'MRNA': 'Health',
-    'XOM': 'Energy', 'CVX': 'Energy', 'COP': 'Energy', 'SLB': 'Energy', 'EOG': 'Energy',
-    'MPC': 'Energy', 'PSX': 'Energy', 'VLO': 'Energy', 'OXY': 'Energy', 'WMB': 'Energy',
-    'DVN': 'Energy', 'HES': 'Energy', 'HAL': 'Energy', 'BKR': 'Energy', 'KMI': 'Energy',
-    'FANG': 'Energy', 'PXD': 'Energy', 'TRGP': 'Energy', 'OKE': 'Energy', 'ET': 'Energy',
-    'AMZN': 'Cons', 'TSLA': 'Cons', 'HD': 'Cons', 'MCD': 'Cons', 'NKE': 'Cons',
-    'LOW': 'Cons', 'SBUX': 'Cons', 'TJX': 'Cons', 'BKNG': 'Cons', 'CMG': 'Cons',
-    'ORLY': 'Cons', 'AZO': 'Cons', 'ROST': 'Cons', 'DHI': 'Cons', 'LEN': 'Cons',
-    'GM': 'Cons', 'F': 'Cons', 'MAR': 'Cons', 'HLT': 'Cons', 'YUM': 'Cons',
-    'DG': 'Cons', 'DLTR': 'Cons', 'BBY': 'Cons', 'ULTA': 'Cons', 'POOL': 'Cons',
-    'LULU': 'Cons',
-    'WMT': 'Staple', 'PG': 'Staple', 'COST': 'Staple', 'KO': 'Staple', 'PEP': 'Staple',
-    'PM': 'Staple', 'MDLZ': 'Staple', 'MO': 'Staple', 'CL': 'Staple', 'KMB': 'Staple',
-    'GIS': 'Staple', 'K': 'Staple', 'HSY': 'Staple', 'SYY': 'Staple', 'STZ': 'Staple',
-    'KHC': 'Staple', 'KR': 'Staple', 'EL': 'Staple', 'CHD': 'Staple', 'CLX': 'Staple',
-    'KDP': 'Staple', 'TAP': 'Staple', 'ADM': 'Staple', 'BG': 'Staple', 'MNST': 'Staple',
-    'CAT': 'Indust', 'GE': 'Indust', 'RTX': 'Indust', 'HON': 'Indust', 'UNP': 'Indust',
-    'BA': 'Indust', 'DE': 'Indust', 'LMT': 'Indust', 'UPS': 'Indust', 'MMM': 'Indust',
-    'GD': 'Indust', 'NOC': 'Indust', 'CSX': 'Indust', 'NSC': 'Indust', 'WM': 'Indust',
-    'EMR': 'Indust', 'ETN': 'Indust', 'ITW': 'Indust', 'PH': 'Indust', 'ROK': 'Indust',
-    'FDX': 'Indust', 'CARR': 'Indust', 'TT': 'Indust', 'PCAR': 'Indust', 'FAST': 'Indust',
-    'LIN': 'Mater', 'APD': 'Mater', 'SHW': 'Mater', 'FCX': 'Mater', 'ECL': 'Mater',
-    'NEM': 'Mater', 'NUE': 'Mater', 'DOW': 'Mater', 'DD': 'Mater', 'VMC': 'Mater',
-    'CTVA': 'Mater', 'PPG': 'Mater', 'MLM': 'Mater', 'IP': 'Mater', 'PKG': 'Mater',
-    'ALB': 'Mater', 'GOLD': 'Mater', 'FMC': 'Mater', 'CF': 'Mater', 'MOS': 'Mater',
-    'NEE': 'Util', 'SO': 'Util', 'DUK': 'Util', 'CEG': 'Util', 'SRE': 'Util',
-    'AEP': 'Util', 'D': 'Util', 'PCG': 'Util', 'EXC': 'Util', 'XEL': 'Util',
-    'ED': 'Util', 'WEC': 'Util', 'ES': 'Util', 'AWK': 'Util', 'DTE': 'Util',
-    'PLD': 'REIT', 'AMT': 'REIT', 'EQIX': 'REIT', 'SPG': 'REIT', 'PSA': 'REIT',
-    'O': 'REIT', 'WELL': 'REIT', 'DLR': 'REIT', 'CCI': 'REIT', 'AVB': 'REIT',
-    'CBRE': 'REIT', 'SBAC': 'REIT', 'WY': 'REIT', 'EQR': 'REIT', 'VTR': 'REIT',
-    'META': 'Comm', 'GOOGL': 'Comm', 'GOOG': 'Comm', 'NFLX': 'Comm', 'DIS': 'Comm',
-    'T': 'Comm', 'VZ': 'Comm', 'CMCSA': 'Comm', 'TMUS': 'Comm', 'CHTR': 'Comm',
-    'EA': 'Comm', 'TTWO': 'Comm', 'RBLX': 'Comm', 'PARA': 'Comm', 'WBD': 'Comm',
-    'MTCH': 'Comm', 'LYV': 'Comm', 'OMC': 'Comm', 'IPG': 'Comm', 'FOXA': 'Comm',
-    'EPAM': 'Tech', 'ALGN': 'Health',
+    "AAPL": "Tech",
+    "MSFT": "Tech",
+    "NVDA": "Tech",
+    "AVGO": "Tech",
+    "ORCL": "Tech",
+    "CRM": "Tech",
+    "AMD": "Tech",
+    "ADBE": "Tech",
+    "CSCO": "Tech",
+    "INTC": "Tech",
+    "IBM": "Tech",
+    "MU": "Tech",
+    "QCOM": "Tech",
+    "TXN": "Tech",
+    "NOW": "Tech",
+    "AMAT": "Tech",
+    "LRCX": "Tech",
+    "KLAC": "Tech",
+    "SNPS": "Tech",
+    "CDNS": "Tech",
+    "ADI": "Tech",
+    "MRVL": "Tech",
+    "FTNT": "Tech",
+    "PANW": "Tech",
+    "CRWD": "Tech",
+    "SNOW": "Tech",
+    "DDOG": "Tech",
+    "ZS": "Tech",
+    "NET": "Tech",
+    "PLTR": "Tech",
+    "DELL": "Tech",
+    "HPQ": "Tech",
+    "HPE": "Tech",
+    "KEYS": "Tech",
+    "SWKS": "Tech",
+    "BRK-B": "Fin",
+    "JPM": "Fin",
+    "V": "Fin",
+    "MA": "Fin",
+    "BAC": "Fin",
+    "WFC": "Fin",
+    "GS": "Fin",
+    "MS": "Fin",
+    "SPGI": "Fin",
+    "AXP": "Fin",
+    "C": "Fin",
+    "BLK": "Fin",
+    "SCHW": "Fin",
+    "CME": "Fin",
+    "CB": "Fin",
+    "PGR": "Fin",
+    "MMC": "Fin",
+    "AON": "Fin",
+    "ICE": "Fin",
+    "MCO": "Fin",
+    "USB": "Fin",
+    "PNC": "Fin",
+    "TFC": "Fin",
+    "AIG": "Fin",
+    "MET": "Fin",
+    "PRU": "Fin",
+    "ALL": "Fin",
+    "TRV": "Fin",
+    "COIN": "Fin",
+    "HOOD": "Fin",
+    "LLY": "Health",
+    "UNH": "Health",
+    "JNJ": "Health",
+    "ABBV": "Health",
+    "MRK": "Health",
+    "PFE": "Health",
+    "TMO": "Health",
+    "ABT": "Health",
+    "DHR": "Health",
+    "BMY": "Health",
+    "AMGN": "Health",
+    "GILD": "Health",
+    "VRTX": "Health",
+    "ISRG": "Health",
+    "MDT": "Health",
+    "SYK": "Health",
+    "BSX": "Health",
+    "REGN": "Health",
+    "ZTS": "Health",
+    "ELV": "Health",
+    "CI": "Health",
+    "HUM": "Health",
+    "CVS": "Health",
+    "MCK": "Health",
+    "CAH": "Health",
+    "GEHC": "Health",
+    "DXCM": "Health",
+    "IQV": "Health",
+    "BIIB": "Health",
+    "MRNA": "Health",
+    "XOM": "Energy",
+    "CVX": "Energy",
+    "COP": "Energy",
+    "SLB": "Energy",
+    "EOG": "Energy",
+    "MPC": "Energy",
+    "PSX": "Energy",
+    "VLO": "Energy",
+    "OXY": "Energy",
+    "WMB": "Energy",
+    "DVN": "Energy",
+    "HES": "Energy",
+    "HAL": "Energy",
+    "BKR": "Energy",
+    "KMI": "Energy",
+    "FANG": "Energy",
+    "PXD": "Energy",
+    "TRGP": "Energy",
+    "OKE": "Energy",
+    "ET": "Energy",
+    "AMZN": "Cons",
+    "TSLA": "Cons",
+    "HD": "Cons",
+    "MCD": "Cons",
+    "NKE": "Cons",
+    "LOW": "Cons",
+    "SBUX": "Cons",
+    "TJX": "Cons",
+    "BKNG": "Cons",
+    "CMG": "Cons",
+    "ORLY": "Cons",
+    "AZO": "Cons",
+    "ROST": "Cons",
+    "DHI": "Cons",
+    "LEN": "Cons",
+    "GM": "Cons",
+    "F": "Cons",
+    "MAR": "Cons",
+    "HLT": "Cons",
+    "YUM": "Cons",
+    "DG": "Cons",
+    "DLTR": "Cons",
+    "BBY": "Cons",
+    "ULTA": "Cons",
+    "POOL": "Cons",
+    "LULU": "Cons",
+    "WMT": "Staple",
+    "PG": "Staple",
+    "COST": "Staple",
+    "KO": "Staple",
+    "PEP": "Staple",
+    "PM": "Staple",
+    "MDLZ": "Staple",
+    "MO": "Staple",
+    "CL": "Staple",
+    "KMB": "Staple",
+    "GIS": "Staple",
+    "K": "Staple",
+    "HSY": "Staple",
+    "SYY": "Staple",
+    "STZ": "Staple",
+    "KHC": "Staple",
+    "KR": "Staple",
+    "EL": "Staple",
+    "CHD": "Staple",
+    "CLX": "Staple",
+    "KDP": "Staple",
+    "TAP": "Staple",
+    "ADM": "Staple",
+    "BG": "Staple",
+    "MNST": "Staple",
+    "CAT": "Indust",
+    "GE": "Indust",
+    "RTX": "Indust",
+    "HON": "Indust",
+    "UNP": "Indust",
+    "BA": "Indust",
+    "DE": "Indust",
+    "LMT": "Indust",
+    "UPS": "Indust",
+    "MMM": "Indust",
+    "GD": "Indust",
+    "NOC": "Indust",
+    "CSX": "Indust",
+    "NSC": "Indust",
+    "WM": "Indust",
+    "EMR": "Indust",
+    "ETN": "Indust",
+    "ITW": "Indust",
+    "PH": "Indust",
+    "ROK": "Indust",
+    "FDX": "Indust",
+    "CARR": "Indust",
+    "TT": "Indust",
+    "PCAR": "Indust",
+    "FAST": "Indust",
+    "LIN": "Mater",
+    "APD": "Mater",
+    "SHW": "Mater",
+    "FCX": "Mater",
+    "ECL": "Mater",
+    "NEM": "Mater",
+    "NUE": "Mater",
+    "DOW": "Mater",
+    "DD": "Mater",
+    "VMC": "Mater",
+    "CTVA": "Mater",
+    "PPG": "Mater",
+    "MLM": "Mater",
+    "IP": "Mater",
+    "PKG": "Mater",
+    "ALB": "Mater",
+    "GOLD": "Mater",
+    "FMC": "Mater",
+    "CF": "Mater",
+    "MOS": "Mater",
+    "NEE": "Util",
+    "SO": "Util",
+    "DUK": "Util",
+    "CEG": "Util",
+    "SRE": "Util",
+    "AEP": "Util",
+    "D": "Util",
+    "PCG": "Util",
+    "EXC": "Util",
+    "XEL": "Util",
+    "ED": "Util",
+    "WEC": "Util",
+    "ES": "Util",
+    "AWK": "Util",
+    "DTE": "Util",
+    "PLD": "REIT",
+    "AMT": "REIT",
+    "EQIX": "REIT",
+    "SPG": "REIT",
+    "PSA": "REIT",
+    "O": "REIT",
+    "WELL": "REIT",
+    "DLR": "REIT",
+    "CCI": "REIT",
+    "AVB": "REIT",
+    "CBRE": "REIT",
+    "SBAC": "REIT",
+    "WY": "REIT",
+    "EQR": "REIT",
+    "VTR": "REIT",
+    "META": "Comm",
+    "GOOGL": "Comm",
+    "GOOG": "Comm",
+    "NFLX": "Comm",
+    "DIS": "Comm",
+    "T": "Comm",
+    "VZ": "Comm",
+    "CMCSA": "Comm",
+    "TMUS": "Comm",
+    "CHTR": "Comm",
+    "EA": "Comm",
+    "TTWO": "Comm",
+    "RBLX": "Comm",
+    "PARA": "Comm",
+    "WBD": "Comm",
+    "MTCH": "Comm",
+    "LYV": "Comm",
+    "OMC": "Comm",
+    "IPG": "Comm",
+    "FOXA": "Comm",
+    "EPAM": "Tech",
+    "ALGN": "Health",
 }
 
-SECTOR_CACHE_FILE = US_DIR / 'sector_cache.json'
+SECTOR_CACHE_FILE = US_DIR / "sector_cache.json"
 _sector_cache: Dict[str, str] = {}
 
 
 def _load_sector_cache() -> Dict[str, str]:
     try:
         if SECTOR_CACHE_FILE.exists():
-            with open(SECTOR_CACHE_FILE, 'r', encoding='utf-8') as f:
+            with open(SECTOR_CACHE_FILE, "r", encoding="utf-8") as f:
                 return json.load(f)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"Error loading sector cache: {e}")
     return {}
 
 
 def _save_sector_cache(cache: Dict[str, str]) -> None:
     try:
         SECTOR_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with open(SECTOR_CACHE_FILE, 'w', encoding='utf-8') as f:
+        with open(SECTOR_CACHE_FILE, "w", encoding="utf-8") as f:
             json.dump(cache, f, ensure_ascii=False, indent=2)
     except Exception as e:
         logger.warning(f"Error saving sector cache: {e}")
@@ -183,23 +403,25 @@ def _save_sector_cache(cache: Dict[str, str]) -> None:
 _sector_cache = _load_sector_cache()
 
 # Validate essential files once at startup (creates mocks if missing)
-ensure_contracts([
-    "smart_money_current",
-    "smart_money_csv",
-    "etf_flows",
-    "etf_flow_analysis",
-    "macro",
-    "macro_en",
-    "macro_gpt",
-    "macro_gpt_en",
-    "heatmap",
-    "options",
-    "ai_summaries",
-    "calendar",
-    "us_volume",
-    "us_stocks",
-    "us_prices",
-])
+ensure_contracts(
+    [
+        "smart_money_current",
+        "smart_money_csv",
+        "etf_flows",
+        "etf_flow_analysis",
+        "macro",
+        "macro_en",
+        "macro_gpt",
+        "macro_gpt_en",
+        "heatmap",
+        "options",
+        "ai_summaries",
+        "calendar",
+        "us_volume",
+        "us_stocks",
+        "us_prices",
+    ]
+)
 
 
 def _now_iso() -> str:
@@ -242,14 +464,16 @@ def _generate_ai_summary(ticker: str, lang: str) -> Dict[str, Any]:
     ensure_contracts(["ai_summaries"])
     summaries = _db_fetch_document("ai_summaries") or {}
     if not summaries:
-        path = US_DIR / 'ai_summaries.json'
+        path = US_DIR / "ai_summaries.json"
         summaries = load_json_file(path, {})
     entry = summaries.get(ticker.upper())
     if not entry:
         return {}
-    raw_summary = entry.get('summary') or entry.get('ai_summary') or ""
-    safe_summary, truncated, orig_len = _sanitize_summary(raw_summary, AI_SUMMARY_MAX_CHARS)
-    updated = entry.get('updated') or entry.get('timestamp') or _now_iso()
+    raw_summary = entry.get("summary") or entry.get("ai_summary") or ""
+    safe_summary, truncated, orig_len = _sanitize_summary(
+        raw_summary, AI_SUMMARY_MAX_CHARS
+    )
+    updated = entry.get("updated") or entry.get("timestamp") or _now_iso()
     return {
         "summary": safe_summary,
         "updated": updated,
@@ -260,6 +484,9 @@ def _generate_ai_summary(ticker: str, lang: str) -> Dict[str, Any]:
 
 
 def _log_perf_component(component: str, started: float):
+    # Only log in verbose mode (DEBUG_LOGS=true)
+    if os.getenv("DEBUG_LOGS", "").lower() != "true":
+        return
     try:
         event = {
             "ts": _now_iso(),
@@ -276,7 +503,7 @@ def _log_perf_component(component: str, started: float):
 
 @app.before_request
 def _before_request():
-    rid = request.headers.get('X-Request-Id') or uuid.uuid4().hex
+    rid = request.headers.get("X-Request-Id") or uuid.uuid4().hex
     g.request_id = rid
     g._start_time = time.perf_counter()
     g._req_cache = {}
@@ -292,41 +519,48 @@ def _before_request():
 @app.after_request
 def _after_request(response):
     try:
-        rid = getattr(g, 'request_id', None) or uuid.uuid4().hex
-        response.headers['X-Request-Id'] = rid
-        start = getattr(g, '_start_time', None)
-        latency_ms = None
+        rid = getattr(g, "request_id", None) or uuid.uuid4().hex
+        response.headers["X-Request-Id"] = rid
+        start = getattr(g, "_start_time", None)
+        latency_ms = 0
         if start is not None:
             latency_ms = round((time.perf_counter() - start) * 1000, 2)
-        event = {
-            "ts": _now_iso(),
-            "level": "info",
-            "event": "http_request",
-            "request_id": rid,
-            "method": request.method,
-            "path": request.path,
-            "status": response.status_code,
-            "latency_ms": latency_ms,
-        }
-        request_logger.info(json.dumps(event, ensure_ascii=False))
-    except Exception:
-        # Do not block response on logging failures
-        pass
-    try:
-        stats = get_perf_stats()
-        perf_event = {
-            "ts": _now_iso(),
-            "level": "info",
-            "event": "perf_summary",
-            "request_id": rid,
-            "path": request.path,
-            "fmp_calls": stats.get("fmp_calls", 0),
-            "fmp_batches": stats.get("fmp_batches", 0),
-            "cache_hits": stats.get("cache_hits", 0),
-            "cache_misses": stats.get("cache_misses", 0),
-            "parallel_tasks": stats.get("parallel_tasks", 0),
-        }
-        request_logger.info(json.dumps(perf_event, ensure_ascii=False))
+        
+        # 개발 모드: 간단한 한 줄 로그 (DEBUG_LOGS=true로 상세 로그 활성화)
+        verbose_logs = os.getenv("DEBUG_LOGS", "").lower() == "true"
+        
+        # Skip noisy paths in simple mode
+        skip_paths = {"/favicon.ico", "/status"}
+        status = response.status_code
+        method = request.method
+        path = request.path
+        
+        if verbose_logs:
+            # 상세 JSON 로그 (프로덕션/디버깅용)
+            event = {
+                "ts": _now_iso(),
+                "level": "info",
+                "event": "http_request",
+                "request_id": rid,
+                "method": method,
+                "path": path,
+                "status": status,
+                "latency_ms": latency_ms,
+            }
+            request_logger.info(json.dumps(event, ensure_ascii=False))
+        else:
+            # 개발용 간단 로그
+            if path not in skip_paths:
+                # 상태 코드별 표시
+                if status >= 500:
+                    icon = "❌"
+                elif status >= 400:
+                    icon = "⚠️"
+                elif latency_ms > 1000:
+                    icon = "🐢"  # 느린 요청
+                else:
+                    icon = "✓"
+                print(f"  {icon} {method} {path} → {status} ({latency_ms}ms)")
     except Exception:
         pass
     return response
@@ -339,44 +573,53 @@ def get_sector(ticker: str) -> str:
     if ticker in _sector_cache:
         return _sector_cache[ticker]
     cache_key = ("sector_lookup", ticker)
+
     def loader():
         try:
             fmp = get_fmp_client()
             fmp_symbol = to_fmp_symbol(ticker)
             profile = fmp.profile(fmp_symbol) or {}
             get_perf_stats()["fmp_calls"] += 1
-            sector = profile.get('sector', '') or profile.get('industry', '')
+            sector = profile.get("sector", "") or profile.get("industry", "")
             sector_short_map = {
-                'Technology': 'Tech', 'Information Technology': 'Tech',
-                'Healthcare': 'Health', 'Health Care': 'Health',
-                'Financials': 'Fin', 'Financial Services': 'Fin',
-                'Consumer Discretionary': 'Cons', 'Consumer Cyclical': 'Cons',
-                'Consumer Staples': 'Staple', 'Consumer Defensive': 'Staple',
-                'Energy': 'Energy', 'Industrials': 'Indust',
-                'Materials': 'Mater', 'Basic Materials': 'Mater',
-                'Utilities': 'Util', 'Real Estate': 'REIT',
-                'Communication Services': 'Comm'
+                "Technology": "Tech",
+                "Information Technology": "Tech",
+                "Healthcare": "Health",
+                "Health Care": "Health",
+                "Financials": "Fin",
+                "Financial Services": "Fin",
+                "Consumer Discretionary": "Cons",
+                "Consumer Cyclical": "Cons",
+                "Consumer Staples": "Staple",
+                "Consumer Defensive": "Staple",
+                "Energy": "Energy",
+                "Industrials": "Indust",
+                "Materials": "Mater",
+                "Basic Materials": "Mater",
+                "Utilities": "Util",
+                "Real Estate": "REIT",
+                "Communication Services": "Comm",
             }
-            short_sector = sector_short_map.get(sector, sector[:5] if sector else '-')
+            short_sector = sector_short_map.get(sector, sector[:5] if sector else "-")
             _sector_cache[ticker] = short_sector
             _save_sector_cache(_sector_cache)
             return short_sector
         except Exception:
-            return '-'
+            return "-"
 
     return cache_get_or_set(cache_key, loader)
 
 
 def grade_from_score(score: float) -> str:
     if score >= 85:
-        return 'A+'
+        return "A+"
     if score >= 75:
-        return 'A'
+        return "A"
     if score >= 65:
-        return 'B'
+        return "B"
     if score >= 55:
-        return 'C'
-    return 'D'
+        return "C"
+    return "D"
 
 
 def safe_float(val, default: float = 0.0) -> float:
@@ -395,6 +638,7 @@ def fetch_price_map(tickers: List[str]) -> Dict[str, float]:
     if not tickers:
         return {}
     cache_key = ("price_map", tuple(sorted([str(t).upper() for t in tickers])))
+
     def loader():
         started = time.perf_counter()
         try:
@@ -425,12 +669,13 @@ def fetch_price_map(tickers: List[str]) -> Dict[str, float]:
             return {}
         finally:
             _log_perf_component("price_map", started)
+
     return cache_get_or_set(cache_key, loader)
 
 
 def load_json_file(path: str, default=None):
     try:
-        with open(path, 'r', encoding='utf-8') as f:
+        with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception:
         return default if default is not None else {}
@@ -443,7 +688,9 @@ def _get_db_connection():
         return None
 
 
-def _db_fetch_document(doc_type: str, lang: str = "na", model: str = "na") -> Dict[str, Any]:
+def _db_fetch_document(
+    doc_type: str, lang: str = "na", model: str = "na"
+) -> Dict[str, Any]:
     conn = _get_db_connection()
     if conn is None:
         return {}
@@ -460,7 +707,11 @@ def _db_fetch_document(doc_type: str, lang: str = "na", model: str = "na") -> Di
         ).fetchone()
         if not row:
             return {}
-        payload = row["payload_json"] if isinstance(row, dict) or hasattr(row, "__getitem__") else None
+        payload = (
+            row["payload_json"]
+            if isinstance(row, dict) or hasattr(row, "__getitem__")
+            else None
+        )
         if not payload:
             return {}
         return json.loads(payload)
@@ -595,23 +846,39 @@ def _db_fetch_etf_flows():
         except Exception:
             pass
 
+
 # ------------- Routes -------------
-@app.route('/')
+@app.route("/")
 def index():
-    return render_template('index.html')
+    return render_template("index.html")
 
 
-@app.route('/health')
+@app.route("/direct-indexing")
+def direct_indexing_dashboard():
+    return render_template("direct_indexing/dashboard.html")
+
+
+@app.route("/backtest")
+def backtest_dashboard():
+    return render_template("backtest/index.html")
+
+
+@app.route("/health")
 def health():
-    return jsonify({"ok": True, "service": "gyuant-app", "ts": _now_iso()}), 200, {"Cache-Control": "no-store"}
+    return (
+        jsonify({"ok": True, "service": "gyuant-app", "ts": _now_iso()}),
+        200,
+        {"Cache-Control": "no-store"},
+    )
 
-@app.route('/favicon.ico')
+
+@app.route("/favicon.ico")
 def favicon():
     return "", 204
 
 
 # Status endpoint is placed near APIs for minimal intrusion
-@app.route('/status')
+@app.route("/status")
 def status():
     try:
         from utils.pipeline_utils import resolve_paths
@@ -624,7 +891,13 @@ def status():
 
         def file_info(p: Path) -> Dict[str, any]:
             if not p.exists():
-                return {"path": str(p), "exists": False, "mtime": None, "age_sec": None, "size_bytes": None}
+                return {
+                    "path": str(p),
+                    "exists": False,
+                    "mtime": None,
+                    "age_sec": None,
+                    "size_bytes": None,
+                }
             stat = p.stat()
             mtime = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).astimezone()
             age_sec = (now - mtime).total_seconds()
@@ -641,15 +914,25 @@ def status():
                 return None
             try:
                 if len(value) == 10:
-                    return datetime.strptime(value, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-                return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
+                    return datetime.strptime(value, "%Y-%m-%d").replace(
+                        tzinfo=timezone.utc
+                    )
+                return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(
+                    timezone.utc
+                )
             except Exception:
                 return None
 
         def db_info(label: str, updated_at: Optional[str]) -> Dict[str, any]:
             dt = _parse_db_time(updated_at or "")
             if not dt:
-                return {"path": f"db:{label}", "exists": False, "mtime": None, "age_sec": None, "size_bytes": None}
+                return {
+                    "path": f"db:{label}",
+                    "exists": False,
+                    "mtime": None,
+                    "age_sec": None,
+                    "size_bytes": None,
+                }
             age_sec = (now - dt).total_seconds()
             return {
                 "path": f"db:{label}",
@@ -661,9 +944,15 @@ def status():
 
         modules = {
             "indices": [data_dir / "us_daily_prices.csv"],
-            "smart_money": [data_dir / "smart_money_current.json", data_dir / "smart_money_picks_v2.csv"],
+            "smart_money": [
+                data_dir / "smart_money_current.json",
+                data_dir / "smart_money_picks_v2.csv",
+            ],
             "etf": [data_dir / "us_etf_flows.csv", data_dir / "etf_flow_analysis.json"],
-            "macro": [data_dir / "macro_analysis.json", data_dir / "macro_analysis_en.json"],
+            "macro": [
+                data_dir / "macro_analysis.json",
+                data_dir / "macro_analysis_en.json",
+            ],
             "options": [data_dir / "options_flow.json"],
         }
 
@@ -675,8 +964,12 @@ def status():
         db_overrides: Dict[str, List[Dict[str, Any]]] = {}
         if db_conn is not None:
             try:
-                row = db_conn.execute("SELECT MAX(date) AS max_date FROM market_prices_daily").fetchone()
-                db_overrides["indices"] = [db_info("market_prices_daily", row["max_date"] if row else None)]
+                row = db_conn.execute(
+                    "SELECT MAX(date) AS max_date FROM market_prices_daily"
+                ).fetchone()
+                db_overrides["indices"] = [
+                    db_info("market_prices_daily", row["max_date"] if row else None)
+                ]
                 row = db_conn.execute(
                     """
                     SELECT analysis_date, analysis_timestamp
@@ -686,9 +979,18 @@ def status():
                     """
                 ).fetchone()
                 ts = row["analysis_timestamp"] if row else None
-                db_overrides["smart_money"] = [db_info("market_smart_money_runs", ts or (row["analysis_date"] if row else None))]
-                row = db_conn.execute("SELECT MAX(as_of_date) AS max_date FROM market_etf_flows").fetchone()
-                db_overrides["etf"] = [db_info("market_etf_flows", row["max_date"] if row else None)]
+                db_overrides["smart_money"] = [
+                    db_info(
+                        "market_smart_money_runs",
+                        ts or (row["analysis_date"] if row else None),
+                    )
+                ]
+                row = db_conn.execute(
+                    "SELECT MAX(as_of_date) AS max_date FROM market_etf_flows"
+                ).fetchone()
+                db_overrides["etf"] = [
+                    db_info("market_etf_flows", row["max_date"] if row else None)
+                ]
                 row = db_conn.execute(
                     """
                     SELECT as_of_date, updated_at
@@ -699,7 +1001,12 @@ def status():
                     """
                 ).fetchone()
                 ts = row["updated_at"] if row else None
-                db_overrides["macro"] = [db_info("market_documents:macro_analysis", ts or (row["as_of_date"] if row else None))]
+                db_overrides["macro"] = [
+                    db_info(
+                        "market_documents:macro_analysis",
+                        ts or (row["as_of_date"] if row else None),
+                    )
+                ]
             finally:
                 try:
                     db_conn.close()
@@ -713,25 +1020,40 @@ def status():
             for info in infos:
                 if not info["exists"]:
                     problems.append({"reason": "MISSING_FILE", "file": info["path"]})
-                elif info["age_sec"] is not None and info["age_sec"] > stale_threshold_sec:
+                elif (
+                    info["age_sec"] is not None
+                    and info["age_sec"] > stale_threshold_sec
+                ):
                     stale = True
-            ok = not problems and not stale  # Policy: ok only if all exist and not stale
+            ok = (
+                not problems and not stale
+            )  # Policy: ok only if all exist and not stale
             if not ok:
                 overall_ok = False
             modules_status[name] = {
                 "ok": ok,
                 "stale": stale,
-                "updated_at": max([i["mtime"] for i in infos if i["mtime"]], default=None),
+                "updated_at": max(
+                    [i["mtime"] for i in infos if i["mtime"]], default=None
+                ),
                 "files": infos,
                 "problems": problems,
             }
 
-        run_state = {"last_success_at": None, "last_failure_at": None, "error_summary": None}
+        run_state = {
+            "last_success_at": None,
+            "last_failure_at": None,
+            "error_summary": None,
+        }
         try:
             if run_state_path.exists():
                 run_state.update(json.loads(run_state_path.read_text(encoding="utf-8")))
         except Exception:
-            run_state = {"last_success_at": None, "last_failure_at": None, "error_summary": "run_state read failed"}
+            run_state = {
+                "last_success_at": None,
+                "last_failure_at": None,
+                "error_summary": "run_state read failed",
+            }
 
         payload = {
             "ok": overall_ok,
@@ -747,7 +1069,7 @@ def status():
             "ts": _now_iso(),
             "level": "error",
             "event": "status_error",
-            "request_id": getattr(g, 'request_id', ''),
+            "request_id": getattr(g, "request_id", ""),
             "error_type": type(e).__name__,
             "error_message": str(e),
         }
@@ -756,22 +1078,22 @@ def status():
 
 
 # ----------- US API -----------
-@app.route('/api/us/portfolio')
+@app.route("/api/us/portfolio")
 def get_us_portfolio_data():
     try:
         ensure_contracts(["us_prices"])
         market_indices = []
         # FMP-native symbols (no Yahoo-style conversion needed)
         indices_map = {
-            'DJI': 'Dow Jones',
-            'GSPC': 'S&P 500',
-            'NDX': 'NASDAQ',
-            'RUT': 'Russell 2000',
-            'VIX': 'VIX',
-            'GCUSD': 'Gold',
-            'CLUSD': 'Crude Oil',
-            'BTCUSD': 'Bitcoin',
-            'DXUSD': 'Dollar Index',
+            "DJI": "Dow Jones",
+            "GSPC": "S&P 500",
+            "NDX": "NASDAQ",
+            "RUT": "Russell 2000",
+            "VIX": "VIX",
+            "GCUSD": "Gold",
+            "CLUSD": "Crude Oil",
+            "BTCUSD": "Bitcoin",
+            "DXUSD": "Dollar Index",
         }
 
         fmp = get_fmp_client()
@@ -779,7 +1101,9 @@ def get_us_portfolio_data():
         get_perf_stats()["fmp_calls"] += 1
         get_perf_stats()["fmp_batches"] += 1
 
-        quote_map = {item.get("symbol"): item for item in quotes if isinstance(item, dict)}
+        quote_map = {
+            item.get("symbol"): item for item in quotes if isinstance(item, dict)
+        }
         for symbol, name in indices_map.items():
             try:
                 item = quote_map.get(symbol)
@@ -793,17 +1117,21 @@ def get_us_portfolio_data():
                 change = safe_float(change, 0)
                 change_pct = item.get("changesPercentage")
                 if isinstance(change_pct, str):
-                    change_pct = change_pct.replace("%", "").replace("(", "").replace(")", "")
+                    change_pct = (
+                        change_pct.replace("%", "").replace("(", "").replace(")", "")
+                    )
                 change_pct = safe_float(change_pct, 0)
                 if change_pct == 0 and prev_close:
                     change_pct = (change / prev_close) * 100 if prev_close else 0
-                market_indices.append({
-                    'name': name,
-                    'price': f"{price:,.2f}",
-                    'change': f"{change:+,.2f}",
-                    'change_pct': round(change_pct, 2),
-                    'color': 'green' if change >= 0 else 'red'
-                })
+                market_indices.append(
+                    {
+                        "name": name,
+                        "price": f"{price:,.2f}",
+                        "change": f"{change:+,.2f}",
+                        "change_pct": round(change_pct, 2),
+                        "color": "green" if change >= 0 else "red",
+                    }
+                )
             except Exception as e:
                 logger.debug(f"Index parse failed {symbol}: {e}")
 
@@ -818,76 +1146,84 @@ def get_us_portfolio_data():
                 prev_10y = safe_float(prev.get("year10"), rate_10y)
                 change = rate_10y - prev_10y
                 change_pct = (change / prev_10y) * 100 if prev_10y else 0
-                market_indices.append({
-                    'name': '10Y Treasury',
-                    'price': f"{rate_10y:,.2f}",
-                    'change': f"{change:+,.2f}",
-                    'change_pct': round(change_pct, 2),
-                    'color': 'green' if change >= 0 else 'red'
-                })
+                market_indices.append(
+                    {
+                        "name": "10Y Treasury",
+                        "price": f"{rate_10y:,.2f}",
+                        "change": f"{change:+,.2f}",
+                        "change_pct": round(change_pct, 2),
+                        "color": "green" if change >= 0 else "red",
+                    }
+                )
         except Exception as e:
             logger.debug(f"Treasury rates fetch failed: {e}")
 
-        return jsonify({
-            'market_indices': market_indices,
-            'top_holdings': [],
-            'style_box': {}
-        })
+        return jsonify(
+            {"market_indices": market_indices, "top_holdings": [], "style_box": {}}
+        )
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return jsonify({"error": str(e)}), 500
 
 
 def build_smart_money_from_analysis():
     # Try PostgreSQL first via data_access layer, fallback to CSV
     vol_df = get_volume_analysis()
-    
+
     if vol_df.empty:
         # Fallback to CSV
-        vol_path = US_DIR / 'us_volume_analysis.csv'
+        vol_path = US_DIR / "us_volume_analysis.csv"
         if not os.path.exists(vol_path):
-            return [], {'total_analyzed': 0, 'avg_score': 0}
+            return [], {"total_analyzed": 0, "avg_score": 0}
         vol_df = pd.read_csv(vol_path)
-    
-    vol_df['supply_demand_score'] = pd.to_numeric(vol_df.get('supply_demand_score', 0), errors='coerce').fillna(0)
+
+    vol_df["supply_demand_score"] = pd.to_numeric(
+        vol_df.get("supply_demand_score", 0), errors="coerce"
+    ).fillna(0)
 
     # Get ticker info from data_access
     info_df = get_tickers()
     if not info_df.empty:
-        vol_df = vol_df.merge(info_df[['ticker', 'name', 'sector']], on='ticker', how='left')
+        vol_df = vol_df.merge(
+            info_df[["ticker", "name", "sector"]], on="ticker", how="left"
+        )
 
-    vol_df['composite_score'] = vol_df['supply_demand_score'].clip(0, 100)
-    vol_df['grade'] = vol_df['composite_score'].apply(grade_from_score)
+    vol_df["composite_score"] = vol_df["supply_demand_score"].clip(0, 100)
+    vol_df["grade"] = vol_df["composite_score"].apply(grade_from_score)
 
-    top_df = vol_df.sort_values('composite_score', ascending=False).head(20)
-    prices = fetch_price_map(top_df['ticker'].tolist())
+    top_df = vol_df.sort_values("composite_score", ascending=False).head(20)
+    prices = fetch_price_map(top_df["ticker"].tolist())
 
     picks = []
     for _, row in top_df.iterrows():
-        ticker = row['ticker']
+        ticker = row["ticker"]
         current_price = prices.get(ticker, 0)
-        score = round(row['composite_score'], 1)
-        picks.append({
-            'ticker': ticker,
-            'name': row.get('name', ticker),
-            'sector': row.get('sector', get_sector(ticker)),
-            'final_score': score,
-            'composite_score': score,
-            'current_price': current_price,
-            'price_at_rec': current_price,
-            'change_since_rec': 0,
-            'target_upside': max(0, round((score - 50) / 2, 1)),
-            'grade': row.get('grade', grade_from_score(score)),
-            'ai_recommendation': 'Buy' if score >= 70 else 'Watch'
-        })
+        score = round(row["composite_score"], 1)
+        picks.append(
+            {
+                "ticker": ticker,
+                "name": row.get("name", ticker),
+                "sector": row.get("sector", get_sector(ticker)),
+                "final_score": score,
+                "composite_score": score,
+                "current_price": current_price,
+                "price_at_rec": current_price,
+                "change_since_rec": 0,
+                "target_upside": max(0, round((score - 50) / 2, 1)),
+                "grade": row.get("grade", grade_from_score(score)),
+                "ai_recommendation": "Buy" if score >= 70 else "Watch",
+            }
+        )
 
     summary = {
-        'total_analyzed': len(vol_df),
-        'avg_score': round(top_df['composite_score'].mean(), 1) if not top_df.empty else 0
+        "total_analyzed": len(vol_df),
+        "avg_score": round(top_df["composite_score"].mean(), 1)
+        if not top_df.empty
+        else 0,
     }
     return picks, summary
 
 
-@app.route('/api/us/smart-money')
+@app.route("/api/us/smart-money")
 def get_us_smart_money():
     try:
         db_payload = _db_fetch_smart_money()
@@ -896,85 +1232,104 @@ def get_us_smart_money():
             for row in db_payload["picks"]:
                 ticker = row.get("ticker")
                 score = safe_float(row.get("composite_score"), 0)
-                picks.append({
-                    "ticker": ticker,
-                    "name": row.get("name", ticker),
-                    "sector": row.get("sector") or get_sector(ticker),
-                    "final_score": score,
-                    "composite_score": score,
-                    "current_price": safe_float(row.get("current_price"), 0),
-                    "price_at_rec": safe_float(row.get("price_at_rec", row.get("current_price")), 0),
-                    "change_since_rec": safe_float(row.get("change_since_rec"), 0),
-                    "target_upside": safe_float(row.get("target_upside"), 0),
-                    "grade": row.get("grade", grade_from_score(score)),
-                    "ai_recommendation": row.get("recommendation", "Hold"),
-                })
+                picks.append(
+                    {
+                        "ticker": ticker,
+                        "name": row.get("name", ticker),
+                        "sector": row.get("sector") or get_sector(ticker),
+                        "final_score": score,
+                        "composite_score": score,
+                        "current_price": safe_float(row.get("current_price"), 0),
+                        "price_at_rec": safe_float(
+                            row.get("price_at_rec", row.get("current_price")), 0
+                        ),
+                        "change_since_rec": safe_float(row.get("change_since_rec"), 0),
+                        "target_upside": safe_float(row.get("target_upside"), 0),
+                        "grade": row.get("grade", grade_from_score(score)),
+                        "ai_recommendation": row.get("recommendation", "Hold"),
+                    }
+                )
             run = db_payload["run"]
             summary = db_payload.get("summary") or {"total_analyzed": len(picks)}
-            return jsonify({
-                "analysis_date": run.get("analysis_date", ""),
-                "analysis_timestamp": run.get("analysis_timestamp", ""),
-                "top_picks": picks,
-                "summary": summary,
-            })
+            return jsonify(
+                {
+                    "analysis_date": run.get("analysis_date", ""),
+                    "analysis_timestamp": run.get("analysis_timestamp", ""),
+                    "top_picks": picks,
+                    "summary": summary,
+                }
+            )
 
-        ensure_contracts(["smart_money_current", "smart_money_csv", "us_volume", "us_stocks"])
+        ensure_contracts(
+            ["smart_money_current", "smart_money_csv", "us_volume", "us_stocks"]
+        )
         # Prefer tracked snapshot with performance
-        current_file = US_DIR / 'smart_money_current.json'
+        current_file = US_DIR / "smart_money_current.json"
         if current_file.exists():
             snapshot = load_json_file(current_file, {})
-            picks = snapshot.get('picks', [])
-            return jsonify({
-                'analysis_date': snapshot.get('analysis_date', ''),
-                'analysis_timestamp': snapshot.get('analysis_timestamp', ''),
-                'top_picks': picks,
-                'summary': snapshot.get('summary', {'total_analyzed': len(picks)})
-            })
+            picks = snapshot.get("picks", [])
+            return jsonify(
+                {
+                    "analysis_date": snapshot.get("analysis_date", ""),
+                    "analysis_timestamp": snapshot.get("analysis_timestamp", ""),
+                    "top_picks": picks,
+                    "summary": snapshot.get("summary", {"total_analyzed": len(picks)}),
+                }
+            )
 
-        csv_path = US_DIR / 'smart_money_picks_v2.csv'
+        csv_path = US_DIR / "smart_money_picks_v2.csv"
         if csv_path.exists():
             df = pd.read_csv(csv_path)
             top_df = df.head(20).copy()
-            price_map = fetch_price_map(top_df['ticker'].tolist())
+            price_map = fetch_price_map(top_df["ticker"].tolist())
 
             picks = []
             for _, row in top_df.iterrows():
-                ticker = row['ticker']
-                rec_price = safe_float(row.get('current_price'), 0)
+                ticker = row["ticker"]
+                rec_price = safe_float(row.get("current_price"), 0)
                 cur_price = price_map.get(ticker, rec_price)
                 change_pct = ((cur_price / rec_price - 1) * 100) if rec_price else 0
-                score = safe_float(row.get('smart_money_score', row.get('composite_score', 0)))
-                picks.append({
-                    'ticker': ticker,
-                    'name': row.get('name', ticker),
-                    'sector': get_sector(ticker),
-                    'final_score': score,
-                    'composite_score': score,
-                    'current_price': cur_price,
-                    'price_at_rec': rec_price,
-                    'change_since_rec': round(change_pct, 2),
-                    'target_upside': safe_float(row.get('target_upside'), 0),
-                    'grade': row.get('grade', grade_from_score(score)),
-                    'ai_recommendation': row.get('ai_recommendation', 'Hold')
-                })
+                score = safe_float(
+                    row.get("smart_money_score", row.get("composite_score", 0))
+                )
+                picks.append(
+                    {
+                        "ticker": ticker,
+                        "name": row.get("name", ticker),
+                        "sector": get_sector(ticker),
+                        "final_score": score,
+                        "composite_score": score,
+                        "current_price": cur_price,
+                        "price_at_rec": rec_price,
+                        "change_since_rec": round(change_pct, 2),
+                        "target_upside": safe_float(row.get("target_upside"), 0),
+                        "grade": row.get("grade", grade_from_score(score)),
+                        "ai_recommendation": row.get("ai_recommendation", "Hold"),
+                    }
+                )
 
             summary = {
-                'total_analyzed': len(df),
-                'avg_score': round(df['smart_money_score'].mean() if 'smart_money_score' in df.columns else score, 1)
+                "total_analyzed": len(df),
+                "avg_score": round(
+                    df["smart_money_score"].mean()
+                    if "smart_money_score" in df.columns
+                    else score,
+                    1,
+                ),
             }
-            return jsonify({'top_picks': picks, 'summary': summary})
+            return jsonify({"top_picks": picks, "summary": summary})
 
         # Build from analysis outputs
         picks, summary = build_smart_money_from_analysis()
         if not picks:
-            return jsonify({'error': 'No smart money data available'}), 404
-        return jsonify({'top_picks': picks, 'summary': summary})
+            return jsonify({"error": "No smart money data available"}), 404
+        return jsonify({"top_picks": picks, "summary": summary})
     except Exception as e:
         logger.error(f"Smart money error: {e}")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({"error": str(e)}), 500
 
 
-@app.route('/api/us/etf-flows')
+@app.route("/api/us/etf-flows")
 def get_us_etf_flows():
     try:
         db_data = _db_fetch_etf_flows()
@@ -982,70 +1337,82 @@ def get_us_etf_flows():
             df = pd.DataFrame(db_data["rows"])
         else:
             ensure_contracts(["etf_flows", "etf_flow_analysis"])
-            csv_path = US_DIR / 'us_etf_flows.csv'
+            csv_path = US_DIR / "us_etf_flows.csv"
             if not csv_path.exists():
-                return jsonify({'error': 'No ETF data'}), 404
+                return jsonify({"error": "No ETF data"}), 404
             df = pd.read_csv(csv_path)
 
-        df['flow_score'] = pd.to_numeric(df.get('flow_score', 0), errors='coerce').fillna(0)
+        df["flow_score"] = pd.to_numeric(
+            df.get("flow_score", 0), errors="coerce"
+        ).fillna(0)
 
-        broad = df[df['category'].str.contains('Market', na=False)]
-        market_sentiment_score = round(broad['flow_score'].mean(), 1) if not broad.empty else round(df['flow_score'].mean(), 1)
+        broad = df[df["category"].str.contains("Market", na=False)]
+        market_sentiment_score = (
+            round(broad["flow_score"].mean(), 1)
+            if not broad.empty
+            else round(df["flow_score"].mean(), 1)
+        )
 
-        top_inflows = df.nlargest(5, 'flow_score').to_dict(orient='records')
-        top_outflows = df.nsmallest(5, 'flow_score').to_dict(orient='records')
-        sector_flows = df[df['category'].str.contains('Sector', na=False)].to_dict(orient='records')
+        top_inflows = df.nlargest(5, "flow_score").to_dict(orient="records")
+        top_outflows = df.nsmallest(5, "flow_score").to_dict(orient="records")
+        sector_flows = df[df["category"].str.contains("Sector", na=False)].to_dict(
+            orient="records"
+        )
 
         ai_analysis = ""
         ai_doc = _db_fetch_document("etf_flow_analysis")
         if ai_doc:
             ai_analysis = ai_doc.get("analysis") or ai_doc.get("ai_analysis", "")
         else:
-            ai_path = US_DIR / 'etf_flow_analysis.json'
+            ai_path = US_DIR / "etf_flow_analysis.json"
             if ai_path.exists():
                 ai_json = load_json_file(ai_path, {})
-                ai_analysis = ai_json.get('analysis') or ai_json.get('ai_analysis', '')
+                ai_analysis = ai_json.get("analysis") or ai_json.get("ai_analysis", "")
 
-        return jsonify({
-            'market_sentiment_score': market_sentiment_score,
-            'sector_flows': sector_flows,
-            'top_inflows': top_inflows,
-            'top_outflows': top_outflows,
-            'all_etfs': df.to_dict(orient='records'),
-            'ai_analysis': ai_analysis
-        })
+        return jsonify(
+            {
+                "market_sentiment_score": market_sentiment_score,
+                "sector_flows": sector_flows,
+                "top_inflows": top_inflows,
+                "top_outflows": top_outflows,
+                "all_etfs": df.to_dict(orient="records"),
+                "ai_analysis": ai_analysis,
+            }
+        )
     except Exception as e:
         logger.error(f"ETF flows error: {e}")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({"error": str(e)}), 500
 
 
-@app.route('/api/us/stock-chart/<ticker>')
+@app.route("/api/us/stock-chart/<ticker>")
 def get_us_stock_chart(ticker):
     try:
-        period = request.args.get('period', '1y')
-        if period not in ['1mo', '3mo', '6mo', '1y', '2y', '5y', 'max']:
-            period = '1y'
-        end_date = datetime.utcnow().date()
+        period = request.args.get("period", "1y")
+        if period not in ["1mo", "3mo", "6mo", "1y", "2y", "5y", "max"]:
+            period = "1y"
+        end_date = datetime.now(timezone.utc).date()
         period_days = {
-            '1mo': 30,
-            '3mo': 90,
-            '6mo': 180,
-            '1y': 365,
-            '2y': 730,
-            '5y': 1825,
+            "1mo": 30,
+            "3mo": 90,
+            "6mo": 180,
+            "1y": 365,
+            "2y": 730,
+            "5y": 1825,
         }
         from_date = None
-        if period != 'max':
+        if period != "max":
             from_date = (end_date - timedelta(days=period_days[period])).isoformat()
         to_date = end_date.isoformat()
 
         fmp = get_fmp_client()
         fmp_symbol = to_fmp_symbol(ticker)
-        data = fmp.historical_price_full(fmp_symbol, from_date=from_date, to_date=to_date)
+        data = fmp.historical_price_full(
+            fmp_symbol, from_date=from_date, to_date=to_date
+        )
         get_perf_stats()["fmp_calls"] += 1
         hist = data.get("historical", []) if isinstance(data, dict) else []
         if not hist:
-            return jsonify({'error': f'No data found for {ticker}'}), 404
+            return jsonify({"error": f"No data found for {ticker}"}), 404
 
         hist_sorted = sorted(hist, key=lambda x: x.get("date", ""))
         candles = []
@@ -1054,24 +1421,28 @@ def get_us_stock_chart(ticker):
             if not date_str:
                 continue
             try:
-                dt = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                dt = datetime.strptime(date_str, "%Y-%m-%d").replace(
+                    tzinfo=timezone.utc
+                )
             except Exception:
                 continue
-            candles.append({
-                'time': int(dt.timestamp()),
-                'open': round(safe_float(row.get('open')), 2),
-                'high': round(safe_float(row.get('high')), 2),
-                'low': round(safe_float(row.get('low')), 2),
-                'close': round(safe_float(row.get('close')), 2)
-            })
+            candles.append(
+                {
+                    "time": int(dt.timestamp()),
+                    "open": round(safe_float(row.get("open")), 2),
+                    "high": round(safe_float(row.get("high")), 2),
+                    "low": round(safe_float(row.get("low")), 2),
+                    "close": round(safe_float(row.get("close")), 2),
+                }
+            )
 
-        return jsonify({'ticker': ticker, 'period': period, 'candles': candles})
+        return jsonify({"ticker": ticker, "period": period, "candles": candles})
     except Exception as e:
         logger.error(f"US stock chart error: {e}")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({"error": str(e)}), 500
 
 
-@app.route('/api/us/history-dates')
+@app.route("/api/us/history-dates")
 def get_us_history_dates():
     try:
         conn = _get_db_connection()
@@ -1084,22 +1455,22 @@ def get_us_history_dates():
             except Exception:
                 pass
             dates = [r["analysis_date"] for r in rows if r["analysis_date"]]
-            return jsonify({'dates': dates, 'count': len(dates)})
-        history_dir = US_DIR / 'history'
+            return jsonify({"dates": dates, "count": len(dates)})
+        history_dir = US_DIR / "history"
         if not history_dir.exists():
-            return jsonify({'dates': []})
+            return jsonify({"dates": []})
         dates = []
         for f in history_dir.iterdir():
-            if f.name.startswith('picks_') and f.name.endswith('.json'):
+            if f.name.startswith("picks_") and f.name.endswith(".json"):
                 dates.append(f.name[6:-5])
         dates.sort(reverse=True)
-        return jsonify({'dates': dates, 'count': len(dates)})
+        return jsonify({"dates": dates, "count": len(dates)})
     except Exception as e:
         logger.error(f"History dates error: {e}")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({"error": str(e)}), 500
 
 
-@app.route('/api/us/history/<date>')
+@app.route("/api/us/history/<date>")
 def get_us_history_by_date(date):
     try:
         db_payload = _db_fetch_smart_money_by_date(date)
@@ -1112,63 +1483,89 @@ def get_us_history_by_date(date):
                 ticker = pick.get("ticker")
                 price_at_rec = safe_float(pick.get("price_at_rec"), 0)
                 cur_price = prices.get(ticker, price_at_rec)
-                change_pct = ((cur_price / price_at_rec - 1) * 100) if price_at_rec else 0
-                picks_with_perf.append({
-                    **pick,
-                    "sector": pick.get("sector") or get_sector(ticker),
-                    "current_price": round(cur_price, 2),
-                    "price_at_rec": round(price_at_rec, 2),
-                    "change_since_rec": round(change_pct, 2),
-                })
-            avg_perf = np.nanmean([p["change_since_rec"] for p in picks_with_perf]) if picks_with_perf else 0
+                change_pct = (
+                    ((cur_price / price_at_rec - 1) * 100) if price_at_rec else 0
+                )
+                picks_with_perf.append(
+                    {
+                        **pick,
+                        "sector": pick.get("sector") or get_sector(ticker),
+                        "current_price": round(cur_price, 2),
+                        "price_at_rec": round(price_at_rec, 2),
+                        "change_since_rec": round(change_pct, 2),
+                    }
+                )
+            avg_perf = (
+                np.nanmean([p["change_since_rec"] for p in picks_with_perf])
+                if picks_with_perf
+                else 0
+            )
             run = db_payload["run"]
-            return jsonify({
-                "analysis_date": run.get("analysis_date", date),
-                "analysis_timestamp": run.get("analysis_timestamp", ""),
-                "top_picks": picks_with_perf,
-                "summary": {"total": len(picks_with_perf), "avg_performance": round(float(avg_perf), 2)},
-            })
-        history_file = US_DIR / 'history' / f'picks_{date}.json'
+            return jsonify(
+                {
+                    "analysis_date": run.get("analysis_date", date),
+                    "analysis_timestamp": run.get("analysis_timestamp", ""),
+                    "top_picks": picks_with_perf,
+                    "summary": {
+                        "total": len(picks_with_perf),
+                        "avg_performance": round(float(avg_perf), 2),
+                    },
+                }
+            )
+        history_file = US_DIR / "history" / f"picks_{date}.json"
         if not history_file.exists():
-            return jsonify({'error': f'No analysis found for {date}'}), 404
+            return jsonify({"error": f"No analysis found for {date}"}), 404
 
         snapshot = load_json_file(history_file, {})
-        picks = snapshot.get('picks', [])
-        tickers = [p['ticker'] for p in picks]
+        picks = snapshot.get("picks", [])
+        tickers = [p["ticker"] for p in picks]
         prices = fetch_price_map(tickers)
 
         picks_with_perf = []
         for pick in picks:
-            ticker = pick['ticker']
-            price_at_rec = safe_float(pick.get('price_at_analysis', pick.get('price_at_rec', 0)))
+            ticker = pick["ticker"]
+            price_at_rec = safe_float(
+                pick.get("price_at_analysis", pick.get("price_at_rec", 0))
+            )
             cur_price = prices.get(ticker, price_at_rec)
             change_pct = ((cur_price / price_at_rec - 1) * 100) if price_at_rec else 0
-            picks_with_perf.append({
-                **pick,
-                'sector': get_sector(ticker),
-                'current_price': round(cur_price, 2),
-                'price_at_rec': round(price_at_rec, 2),
-                'change_since_rec': round(change_pct, 2)
-            })
+            picks_with_perf.append(
+                {
+                    **pick,
+                    "sector": get_sector(ticker),
+                    "current_price": round(cur_price, 2),
+                    "price_at_rec": round(price_at_rec, 2),
+                    "change_since_rec": round(change_pct, 2),
+                }
+            )
 
-        avg_perf = np.nanmean([p['change_since_rec'] for p in picks_with_perf]) if picks_with_perf else 0
+        avg_perf = (
+            np.nanmean([p["change_since_rec"] for p in picks_with_perf])
+            if picks_with_perf
+            else 0
+        )
 
-        return jsonify({
-            'analysis_date': snapshot.get('analysis_date', date),
-            'analysis_timestamp': snapshot.get('analysis_timestamp', ''),
-            'top_picks': picks_with_perf,
-            'summary': {'total': len(picks_with_perf), 'avg_performance': round(float(avg_perf), 2)}
-        })
+        return jsonify(
+            {
+                "analysis_date": snapshot.get("analysis_date", date),
+                "analysis_timestamp": snapshot.get("analysis_timestamp", ""),
+                "top_picks": picks_with_perf,
+                "summary": {
+                    "total": len(picks_with_perf),
+                    "avg_performance": round(float(avg_perf), 2),
+                },
+            }
+        )
     except Exception as e:
         logger.error(f"History {date} error: {e}")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({"error": str(e)}), 500
 
 
-@app.route('/api/us/macro-analysis')
+@app.route("/api/us/macro-analysis")
 def get_us_macro_analysis():
     try:
-        lang = request.args.get('lang', 'ko')
-        model = request.args.get('model', 'gemini')
+        lang = request.args.get("lang", "ko")
+        model = request.args.get("model", "gemini")
         doc_model = "gpt" if model == "gpt" else "gemini"
         doc_lang = "en" if lang == "en" else "ko"
         db_doc = _db_fetch_document("macro_analysis", lang=doc_lang, model=doc_model)
@@ -1178,23 +1575,35 @@ def get_us_macro_analysis():
             ensure_contracts(["macro", "macro_en", "macro_gpt", "macro_gpt_en"])
 
         # Determine file path based on model/lang
-        if model == 'gpt':
-            analysis_path = US_DIR / ('macro_analysis_gpt_en.json' if lang == 'en' else 'macro_analysis_gpt.json')
+        if model == "gpt":
+            analysis_path = US_DIR / (
+                "macro_analysis_gpt_en.json"
+                if lang == "en"
+                else "macro_analysis_gpt.json"
+            )
             if not analysis_path.exists():
-                analysis_path = US_DIR / ('macro_analysis_en.json' if lang == 'en' else 'macro_analysis.json')
+                analysis_path = US_DIR / (
+                    "macro_analysis_en.json" if lang == "en" else "macro_analysis.json"
+                )
         else:
-            analysis_path = US_DIR / ('macro_analysis_en.json' if lang == 'en' else 'macro_analysis.json')
+            analysis_path = US_DIR / (
+                "macro_analysis_en.json" if lang == "en" else "macro_analysis.json"
+            )
         if not analysis_path.exists():
-            analysis_path = US_DIR / 'macro_analysis.json'
+            analysis_path = US_DIR / "macro_analysis.json"
 
         cached = db_doc or load_json_file(analysis_path, {})
-        macro_indicators = cached.get('macro_indicators', {})
-        ai_analysis = cached.get('ai_analysis', 'Run macro_analyzer.py to refresh analysis.')
+        macro_indicators = cached.get("macro_indicators", {})
+        ai_analysis = cached.get(
+            "ai_analysis", "Run macro_analyzer.py to refresh analysis."
+        )
 
         # Update a few live indicators
-        live_tickers = {'VIX': '^VIX', 'SPY': 'SPY', 'BTC': 'BTC-USD', 'GOLD': 'GC=F'}
+        live_tickers = {"VIX": "^VIX", "SPY": "SPY", "BTC": "BTC-USD", "GOLD": "GC=F"}
         try:
-            name_to_symbol = {name: to_fmp_symbol(sym) for name, sym in live_tickers.items()}
+            name_to_symbol = {
+                name: to_fmp_symbol(sym) for name, sym in live_tickers.items()
+            }
             cache_key = ("macro_live", tuple(sorted(name_to_symbol.values())))
 
             def load_live():
@@ -1210,7 +1619,9 @@ def get_us_macro_analysis():
 
             live = cache_get_or_set(cache_key, load_live)
             if live:
-                quote_map = {item.get("symbol"): item for item in live if isinstance(item, dict)}
+                quote_map = {
+                    item.get("symbol"): item for item in live if isinstance(item, dict)
+                }
                 for name, symbol in name_to_symbol.items():
                     item = quote_map.get(symbol)
                     if not item:
@@ -1220,7 +1631,7 @@ def get_us_macro_analysis():
                         value = item.get("previousClose")
                     if value is None:
                         continue
-                    macro_indicators[name] = {'value': round(float(value), 2)}
+                    macro_indicators[name] = {"value": round(float(value), 2)}
 
             # Treasury rates (2Y/10Y)
             try:
@@ -1239,34 +1650,39 @@ def get_us_macro_analysis():
         except Exception:
             pass
 
-        return jsonify({
-            'macro_indicators': macro_indicators,
-            'ai_analysis': ai_analysis,
-            'timestamp': cached.get('timestamp', datetime.utcnow().isoformat())
-        })
+        return jsonify(
+            {
+                "macro_indicators": macro_indicators,
+                "ai_analysis": ai_analysis,
+                "timestamp": cached.get("timestamp", datetime.now(timezone.utc).isoformat()),
+            }
+        )
     except Exception as e:
         logger.error(f"Macro analysis error: {e}")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({"error": str(e)}), 500
 
 
-@app.route('/api/us/sector-heatmap')
+@app.route("/api/us/sector-heatmap")
 def get_us_sector_heatmap():
     try:
         db_doc = _db_fetch_document("sector_heatmap")
         if db_doc:
             return jsonify(db_doc)
         ensure_contracts(["heatmap"])
-        path = US_DIR / 'sector_heatmap.json'
+        path = US_DIR / "sector_heatmap.json"
         if path.exists():
             return jsonify(load_json_file(path, {}))
         from us_market.sector_heatmap import SectorHeatmapCollector
-        return jsonify(SectorHeatmapCollector().get_sector_performance('1d'))
+
+        return jsonify(SectorHeatmapCollector().get_sector_performance("1d"))
     except Exception as e:
         logger.error(f"Sector heatmap error: {e}")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({"error": str(e)}), 500
 
 
-def _compute_top_movers(window: str, limit: int) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], int, str, List[str]]:
+def _compute_top_movers(
+    window: str, limit: int
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], int, str, List[str]]:
     errors: List[str] = []
     rows_read = 0
     updated_at = _now_iso()
@@ -1279,42 +1695,50 @@ def _compute_top_movers(window: str, limit: int) -> Tuple[List[Dict[str, Any]], 
         if df.empty:
             errors.append("EMPTY_CSV")
             return [], [], rows_read, updated_at, errors
-        
+
         # Track rows dropped at each step for debugging
         initial_count = len(df)
         df = df.dropna(subset=["ticker", "date", "close"])
         after_basic_dropna = len(df)
         if after_basic_dropna < initial_count:
-            logger.debug(f"_compute_top_movers: Dropped {initial_count - after_basic_dropna} rows with missing ticker/date/close")
+            logger.debug(
+                f"_compute_top_movers: Dropped {initial_count - after_basic_dropna} rows with missing ticker/date/close"
+            )
         if df.empty:
             errors.append("ALL_NULL_BASIC")
             return [], [], rows_read, updated_at, errors
-        
+
         df["date"] = pd.to_datetime(df["date"], errors="coerce")
         before_date_dropna = len(df)
         df = df.dropna(subset=["date"])
         after_date_dropna = len(df)
         if after_date_dropna < before_date_dropna:
-            logger.warning(f"_compute_top_movers: Dropped {before_date_dropna - after_date_dropna} rows due to date parsing failure")
+            logger.warning(
+                f"_compute_top_movers: Dropped {before_date_dropna - after_date_dropna} rows due to date parsing failure"
+            )
         if df.empty:
             errors.append("ALL_NULL_DATE")
             return [], [], rows_read, updated_at, errors
-        
+
         df["close"] = pd.to_numeric(df["close"], errors="coerce")
         before_close_dropna = len(df)
         df = df.dropna(subset=["close"])
         after_close_dropna = len(df)
         if after_close_dropna < before_close_dropna:
-            logger.debug(f"_compute_top_movers: Dropped {before_close_dropna - after_close_dropna} rows with invalid close price")
+            logger.debug(
+                f"_compute_top_movers: Dropped {before_close_dropna - after_close_dropna} rows with invalid close price"
+            )
         if df.empty:
             errors.append("ALL_NULL_CLOSE")
             return [], [], rows_read, updated_at, errors
-        
+
         # Log data range for debugging
         min_date = df["date"].min()
         max_date = df["date"].max()
         unique_tickers = df["ticker"].nunique()
-        logger.debug(f"_compute_top_movers: Data range {min_date.date()} to {max_date.date()}, {unique_tickers} unique tickers, {len(df)} valid rows")
+        logger.debug(
+            f"_compute_top_movers: Data range {min_date.date()} to {max_date.date()}, {unique_tickers} unique tickers, {len(df)} valid rows"
+        )
 
         gainers: List[Dict[str, Any]] = []
         losers: List[Dict[str, Any]] = []
@@ -1398,16 +1822,16 @@ def _load_sector_map() -> Dict[str, str]:
         except Exception as e:
             logger.warning(f"Error loading sector map from {path}: {e}")
             continue
-    
+
     # Fallback to SECTOR_MAP if no CSV found
     if SECTOR_MAP:
         logger.debug(f"Using SECTOR_MAP fallback ({len(SECTOR_MAP)} tickers)")
         return SECTOR_MAP.copy()
-    
+
     return {}
 
 
-@app.route('/top-movers')
+@app.route("/top-movers")
 def top_movers():
     start = time.perf_counter()
     rid = getattr(g, "request_id", uuid.uuid4().hex)
@@ -1425,30 +1849,36 @@ def top_movers():
     gainers, losers, rows_read, updated_at, errors = _compute_top_movers(window, limit)
     payload = {
         "data": {"gainers": gainers, "losers": losers, "window": window},
-        "meta": {"updated_at": updated_at, "source_files": [str(US_DIR / 'us_daily_prices.csv')], "stale": False},
+        "meta": {
+            "updated_at": updated_at,
+            "source_files": [str(US_DIR / "us_daily_prices.csv")],
+            "stale": False,
+        },
         "errors": errors,
     }
-    try:
-        latency_ms = round((time.perf_counter() - start) * 1000, 2)
-        event = {
-            "ts": _now_iso(),
-            "level": "info",
-            "event": "top_movers_api",
-            "request_id": rid,
-            "window": window,
-            "limit": limit,
-            "latency_ms": latency_ms,
-            "rows_read": rows_read,
-            "gainers": len(gainers),
-            "losers": len(losers),
-        }
-        request_logger.info(json.dumps(event, ensure_ascii=False))
-    except Exception:
-        pass
+    # Only log in verbose mode (DEBUG_LOGS=true)
+    if os.getenv("DEBUG_LOGS", "").lower() == "true":
+        try:
+            latency_ms = round((time.perf_counter() - start) * 1000, 2)
+            event = {
+                "ts": _now_iso(),
+                "level": "info",
+                "event": "top_movers_api",
+                "request_id": rid,
+                "window": window,
+                "limit": limit,
+                "latency_ms": latency_ms,
+                "rows_read": rows_read,
+                "gainers": len(gainers),
+                "losers": len(losers),
+            }
+            request_logger.info(json.dumps(event, ensure_ascii=False))
+        except Exception:
+            pass
     return jsonify(payload)
 
 
-@app.route('/sectors/heatmap')
+@app.route("/sectors/heatmap")
 def sectors_heatmap():
     start = time.perf_counter()
     rid = getattr(g, "request_id", uuid.uuid4().hex)
@@ -1459,7 +1889,11 @@ def sectors_heatmap():
     if not sector_map:
         payload = {
             "data": [],
-            "meta": {"updated_at": None, "source_files": [str(US_DIR / 'us_daily_prices.csv')], "stale": False},
+            "meta": {
+                "updated_at": None,
+                "source_files": [str(US_DIR / "us_daily_prices.csv")],
+                "stale": False,
+            },
             "errors": ["NO_SECTOR_MAP"],
         }
         return jsonify(payload)
@@ -1478,13 +1912,20 @@ def sectors_heatmap():
             continue
         avg = sum(pct_values) / len(pct_values)
         top_ticker = max(recs, key=lambda r: r.get("pct_change", 0)).get("ticker")
-        items.append({"sector": sec, "pct_change": round(avg, 2), "count": len(recs), "top_ticker": top_ticker})
+        items.append(
+            {
+                "sector": sec,
+                "pct_change": round(avg, 2),
+                "count": len(recs),
+                "top_ticker": top_ticker,
+            }
+        )
     items.sort(key=lambda r: r.get("pct_change", 0), reverse=True)
     payload = {
         "data": items,
         "meta": {
             "updated_at": updated_at,
-            "source_files": [str(US_DIR / 'us_daily_prices.csv')],
+            "source_files": [str(US_DIR / "us_daily_prices.csv")],
             "stale": False,
             # Policy: updated_at uses price file mtime only; sector map may differ but assumed stable
         },
@@ -1508,7 +1949,7 @@ def sectors_heatmap():
     return jsonify(payload)
 
 
-@app.route('/sectors/<sector>/movers')
+@app.route("/sectors/<sector>/movers")
 def sector_movers(sector):
     start = time.perf_counter()
     rid = getattr(g, "request_id", uuid.uuid4().hex)
@@ -1526,7 +1967,11 @@ def sector_movers(sector):
     if not sector_map:
         payload = {
             "data": {"gainers": [], "losers": [], "sector": sector},
-            "meta": {"updated_at": None, "source_files": [str(US_DIR / 'us_daily_prices.csv')], "stale": False},
+            "meta": {
+                "updated_at": None,
+                "source_files": [str(US_DIR / "us_daily_prices.csv")],
+                "stale": False,
+            },
             "errors": ["NO_SECTOR_MAP"],
         }
         return jsonify(payload)
@@ -1545,7 +1990,11 @@ def sector_movers(sector):
     sl = filter_sector(losers)
     payload = {
         "data": {"gainers": sg[:limit], "losers": sl[:limit], "sector": sector},
-        "meta": {"updated_at": updated_at, "source_files": [str(US_DIR / 'us_daily_prices.csv')], "stale": False},
+        "meta": {
+            "updated_at": updated_at,
+            "source_files": [str(US_DIR / "us_daily_prices.csv")],
+            "stale": False,
+        },
         "errors": errors,
     }
     try:
@@ -1569,11 +2018,11 @@ def sector_movers(sector):
     return jsonify(payload)
 
 
-@app.route('/api/us/options-flow')
+@app.route("/api/us/options-flow")
 def get_us_options_flow():
     try:
         ensure_contracts(["options"])
-        path = US_DIR / 'options_flow.json'
+        path = US_DIR / "options_flow.json"
         cfg = {
             "premium_high_usd": OPT_PREMIUM_HIGH_USD,
             "premium_mid_usd": OPT_PREMIUM_MID_USD,
@@ -1593,17 +2042,19 @@ def get_us_options_flow():
         return jsonify(payload)
     except Exception as e:
         logger.error(f"Options flow error: {e}")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({"error": str(e)}), 500
 
 
-def _load_scored_options(cfg: Dict[str, float]) -> Tuple[List[Dict[str, Any]], Dict[str, Any], Path]:
-    path = US_DIR / 'options_flow.json'
+def _load_scored_options(
+    cfg: Dict[str, float],
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any], Path]:
+    path = US_DIR / "options_flow.json"
     raw = _db_fetch_document("options_flow") or load_options_raw(path)
     scored = score_options_flow(raw.get("options_flow") or [], path, cfg)
     return scored, raw, path
 
 
-@app.route('/options/unusual')
+@app.route("/options/unusual")
 def get_options_unusual():
     start = time.perf_counter()
     rid = getattr(g, "request_id", uuid.uuid4().hex)
@@ -1657,7 +2108,9 @@ def get_options_unusual():
         stale = False
         try:
             if source_path.exists():
-                mtime = datetime.fromtimestamp(source_path.stat().st_mtime, tz=timezone.utc).astimezone()
+                mtime = datetime.fromtimestamp(
+                    source_path.stat().st_mtime, tz=timezone.utc
+                ).astimezone()
                 updated_at = mtime.isoformat()
         except Exception:
             pass
@@ -1684,43 +2137,57 @@ def get_options_unusual():
         logger.error(f"Unusual options API error: {e}")
         payload = {
             "data": {"items": [], "count": 0},
-            "meta": {"updated_at": None, "stale": False, "source_files": [], "filters": {}},
+            "meta": {
+                "updated_at": None,
+                "stale": False,
+                "source_files": [],
+                "filters": {},
+            },
             "errors": [str(e)],
         }
         return jsonify(payload), 200
     finally:
-        try:
-            latency_ms = round((time.perf_counter() - start) * 1000, 2)
-            event = {
-                "ts": _now_iso(),
-                "level": "info",
-                "event": "options_unusual_api",
-                "request_id": rid,
-                "ticker": request.args.get("ticker"),
-                "side": request.args.get("side"),
-                "min_score": request.args.get("min_score"),
-                "limit": request.args.get("limit"),
-                "latency_ms": latency_ms,
-                "items_returned": len(locals().get("items", []) or []),
-            }
-            request_logger.info(json.dumps(event, ensure_ascii=False))
-        except Exception:
-            pass
+        # Only log in verbose mode (DEBUG_LOGS=true)
+        if os.getenv("DEBUG_LOGS", "").lower() == "true":
+            try:
+                latency_ms = round((time.perf_counter() - start) * 1000, 2)
+                event = {
+                    "ts": _now_iso(),
+                    "level": "info",
+                    "event": "options_unusual_api",
+                    "request_id": rid,
+                    "ticker": request.args.get("ticker"),
+                    "side": request.args.get("side"),
+                    "min_score": request.args.get("min_score"),
+                    "limit": request.args.get("limit"),
+                    "latency_ms": latency_ms,
+                    "items_returned": len(locals().get("items", []) or []),
+                }
+                request_logger.info(json.dumps(event, ensure_ascii=False))
+            except Exception:
+                pass
 
 
-@app.route('/api/us/ai-summary/<ticker>')
+@app.route("/api/us/ai-summary/<ticker>")
 def get_us_ai_summary(ticker):
     start = time.perf_counter()
-    rid = getattr(g, 'request_id', uuid.uuid4().hex)
-    lang = request.args.get('lang', 'ko')
+    rid = getattr(g, "request_id", uuid.uuid4().hex)
+    lang = request.args.get("lang", "ko")
     if lang not in LANG_WHITELIST:
-        lang = 'ko'
+        lang = "ko"
 
     ticker_clean = ticker.strip().upper()
     if not _validate_ticker(ticker_clean):
-        return jsonify({"error": {"code": "INVALID_TICKER", "message": "Ticker must be A-Z0-9.- and <=12 chars"}}), 400
+        return jsonify(
+            {
+                "error": {
+                    "code": "INVALID_TICKER",
+                    "message": "Ticker must be A-Z0-9.- and <=12 chars",
+                }
+            }
+        ), 400
 
-    force = str(request.args.get('force', '')).lower() in ('1', 'true', 'yes')
+    force = str(request.args.get("force", "")).lower() in ("1", "true", "yes")
     now = datetime.now(timezone.utc)
     key = _cache_key(ticker_clean, lang)
 
@@ -1729,33 +2196,55 @@ def get_us_ai_summary(ticker):
         elapsed = (now - AI_LAST_REGEN[key]).total_seconds()
         if elapsed < AI_SUMMARY_REGEN_COOLDOWN_SEC:
             retry_after = int(AI_SUMMARY_REGEN_COOLDOWN_SEC - elapsed)
-            return jsonify({"error": {"code": "REGEN_COOLDOWN", "message": "Regeneration cooldown"}, "retry_after_sec": retry_after}), 429
+            return jsonify(
+                {
+                    "error": {
+                        "code": "REGEN_COOLDOWN",
+                        "message": "Regeneration cooldown",
+                    },
+                    "retry_after_sec": retry_after,
+                }
+            ), 429
 
     ttl = max(1, AI_SUMMARY_TTL_SEC)
     payload = None
     cached_used = False
 
     cached_entry = AI_SUMMARY_CACHE.get(key)
-    if cached_entry and cached_entry.get("expires_at") and cached_entry["expires_at"] > now and not force:
+    if (
+        cached_entry
+        and cached_entry.get("expires_at")
+        and cached_entry["expires_at"] > now
+        and not force
+    ):
         payload = cached_entry["payload"]
         payload["meta"]["cached"] = True
-        payload["meta"]["expires_in_sec"] = int((cached_entry["expires_at"] - now).total_seconds())
+        payload["meta"]["expires_in_sec"] = int(
+            (cached_entry["expires_at"] - now).total_seconds()
+        )
         payload["meta"]["request_id"] = rid
         cached_used = True
     else:
         lock = _get_lock(key)
         with lock:
             cached_entry = AI_SUMMARY_CACHE.get(key)
-            if cached_entry and cached_entry.get("expires_at") and cached_entry["expires_at"] > now and not force:
+            if (
+                cached_entry
+                and cached_entry.get("expires_at")
+                and cached_entry["expires_at"] > now
+                and not force
+            ):
                 payload = cached_entry["payload"]
                 payload["meta"]["cached"] = True
-                payload["meta"]["expires_in_sec"] = int((cached_entry["expires_at"] - now).total_seconds())
+                payload["meta"]["expires_in_sec"] = int(
+                    (cached_entry["expires_at"] - now).total_seconds()
+                )
                 payload["meta"]["request_id"] = rid
                 cached_used = True
             else:
                 data = _generate_ai_summary(ticker_clean, lang)
                 if not data:
-                    return jsonify({'error': 'Not found'}), 404
+                    return jsonify({"error": "Not found"}), 404
 
                 generated_at_iso = _now_iso()
                 expires_at = now + timedelta(seconds=ttl)
@@ -1769,9 +2258,11 @@ def get_us_ai_summary(ticker):
                         "generated_at": generated_at_iso,
                         "expires_in_sec": ttl,
                         "truncated": data.get("truncated", False),
-                        "original_length": data.get("original_length", len(data["summary"])),
+                        "original_length": data.get(
+                            "original_length", len(data["summary"])
+                        ),
                         "request_id": rid,
-                    }
+                    },
                 }
                 AI_SUMMARY_CACHE[key] = {
                     "payload": payload,
@@ -1780,33 +2271,35 @@ def get_us_ai_summary(ticker):
                 if force:
                     AI_LAST_REGEN[key] = now
 
-    latency_ms = round((time.perf_counter() - start) * 1000, 2)
-    event = {
-        "ts": _now_iso(),
-        "level": "info",
-        "event": "ai_summary",
-        "request_id": rid,
-        "ticker": ticker_clean,
-        "lang": lang,
-        "cached": cached_used,
-        "force": force,
-        "latency_ms": latency_ms,
-        "output_len": len(payload["summary"]) if payload else 0,
-        "truncated": payload["meta"]["truncated"] if payload else False,
-    }
-    try:
-        request_logger.info(json.dumps(event, ensure_ascii=False))
-    except Exception:
-        pass
+    # Only log in verbose mode (DEBUG_LOGS=true)
+    if os.getenv("DEBUG_LOGS", "").lower() == "true":
+        latency_ms = round((time.perf_counter() - start) * 1000, 2)
+        event = {
+            "ts": _now_iso(),
+            "level": "info",
+            "event": "ai_summary",
+            "request_id": rid,
+            "ticker": ticker_clean,
+            "lang": lang,
+            "cached": cached_used,
+            "force": force,
+            "latency_ms": latency_ms,
+            "output_len": len(payload["summary"]) if payload else 0,
+            "truncated": payload["meta"]["truncated"] if payload else False,
+        }
+        try:
+            request_logger.info(json.dumps(event, ensure_ascii=False))
+        except Exception:
+            pass
 
     return jsonify(payload)
 
 
-@app.route('/api/run-analysis', methods=['POST'])
+@app.route("/api/run-analysis", methods=["POST"])
 def run_analysis():
     """
     Trigger the US Market analysis pipeline in background.
-    
+
     JSON body options:
     - quick: bool - Skip AI analysis (uses --quick flag)
     - smart: bool - Use smart_update.py for incremental updates based on file age
@@ -1815,83 +2308,94 @@ def run_analysis():
     try:
         # Get optional parameters
         data = request.get_json(force=True) if request.data else {}
-        quick_mode = data.get('quick', False)
-        smart_mode = data.get('smart', False)
-        force_mode = data.get('force', False)
-        
+        quick_mode = data.get("quick", False)
+        smart_mode = data.get("smart", False)
+        force_mode = data.get("force", False)
+
         def run_pipeline():
             try:
                 if smart_mode:
                     # Use smart_update.py for incremental updates
                     logger.info("🔍 Starting Smart Update (incremental)...")
-                    smart_script = US_DIR / 'smart_update.py'
+                    smart_script = US_DIR / "smart_update.py"
                     if not smart_script.exists():
-                        logger.warning("smart_update.py not found, falling back to full update")
+                        logger.warning(
+                            "smart_update.py not found, falling back to full update"
+                        )
                         smart_mode_active = False
                     else:
                         cmd = [sys.executable, str(smart_script)]
                         if force_mode:
-                            cmd.append('--force')
+                            cmd.append("--force")
                         smart_mode_active = True
                 else:
                     smart_mode_active = False
-                
+
                 if not smart_mode_active:
                     # Use full update_all.py pipeline
                     logger.info("🚀 Starting US Market Analysis Pipeline...")
-                    update_script = US_DIR / 'update_all.py'
+                    update_script = US_DIR / "update_all.py"
                     cmd = [sys.executable, str(update_script)]
                     if quick_mode:
-                        cmd.append('--quick')
-                
+                        cmd.append("--quick")
+
                 # Set UTF-8 encoding for Windows compatibility
                 env = os.environ.copy()
-                env['PYTHONIOENCODING'] = 'utf-8'
-                
+                env["PYTHONIOENCODING"] = "utf-8"
+
                 # Run the pipeline
                 result = subprocess.run(
                     cmd,
                     capture_output=True,
                     text=True,
-                    encoding='utf-8',
-                    errors='replace',
+                    encoding="utf-8",
+                    errors="replace",
                     env=env,
-                    cwd=str(US_DIR)
+                    cwd=str(US_DIR),
                 )
-                
+
                 if result.returncode == 0:
                     logger.info("✅ US Market Analysis Pipeline completed successfully")
                 else:
                     logger.error(f"❌ Pipeline failed with code {result.returncode}")
                     if result.stderr:
                         logger.error(f"Error: {result.stderr[-1000:]}")
-                        
+
             except Exception as e:
                 logger.error(f"❌ Background analysis failed: {e}")
                 logger.error(traceback.format_exc())
 
         thread = threading.Thread(target=run_pipeline, daemon=True)
         thread.start()
-        
-        mode_desc = 'smart incremental' if smart_mode else ('quick' if quick_mode else 'full')
-        return jsonify({
-            'status': 'started',
-            'message': f'Analysis pipeline ({mode_desc}) started in background.',
-            'mode': mode_desc,
-            'quick_mode': quick_mode,
-            'smart_mode': smart_mode,
-            'phases': ['Data Collection', 'Basic Analysis', 'Screening', 'AI Analysis']
-        })
+
+        mode_desc = (
+            "smart incremental" if smart_mode else ("quick" if quick_mode else "full")
+        )
+        return jsonify(
+            {
+                "status": "started",
+                "message": f"Analysis pipeline ({mode_desc}) started in background.",
+                "mode": mode_desc,
+                "quick_mode": quick_mode,
+                "smart_mode": smart_mode,
+                "phases": [
+                    "Data Collection",
+                    "Basic Analysis",
+                    "Screening",
+                    "AI Analysis",
+                ],
+            }
+        )
     except Exception as e:
         logger.error(f"Failed to start analysis: {e}")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({"error": str(e)}), 500
 
 
-@app.route('/api/realtime-prices', methods=['POST'])
+@app.route("/api/realtime-prices", methods=["POST"])
 def get_realtime_prices():
     try:
         data = request.get_json(force=True) if request.data else {}
-        tickers = data.get('tickers', [])
+        tickers = data.get("tickers", [])
         if not tickers:
             return jsonify({})
 
@@ -1917,43 +2421,51 @@ def get_realtime_prices():
                 if current is None:
                     continue
                 open_price = item.get("open")
-                high_price = item.get("dayHigh") if item.get("dayHigh") is not None else item.get("high")
-                low_price = item.get("dayLow") if item.get("dayLow") is not None else item.get("low")
+                high_price = (
+                    item.get("dayHigh")
+                    if item.get("dayHigh") is not None
+                    else item.get("high")
+                )
+                low_price = (
+                    item.get("dayLow")
+                    if item.get("dayLow") is not None
+                    else item.get("low")
+                )
                 ts = item.get("timestamp")
                 if ts:
-                    date_str = datetime.utcfromtimestamp(ts).strftime('%Y-%m-%d')
+                    date_str = datetime.utcfromtimestamp(ts).strftime("%Y-%m-%d")
                 else:
-                    date_str = datetime.utcnow().strftime('%Y-%m-%d')
+                    date_str = datetime.utcnow().strftime("%Y-%m-%d")
                 prices[original] = {
-                    'current': safe_float(current),
-                    'open': safe_float(open_price),
-                    'high': safe_float(high_price),
-                    'low': safe_float(low_price),
-                    'date': date_str
+                    "current": safe_float(current),
+                    "open": safe_float(open_price),
+                    "high": safe_float(high_price),
+                    "low": safe_float(low_price),
+                    "date": date_str,
                 }
 
         return jsonify(prices)
     except Exception as e:
         logger.error(f"Realtime prices error: {e}")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({"error": str(e)}), 500
 
 
-@app.route('/api/us/calendar')
+@app.route("/api/us/calendar")
 def get_us_calendar():
     try:
         db_doc = _db_fetch_document("calendar")
         if db_doc:
             return jsonify(db_doc)
         ensure_contracts(["calendar"])
-        calendar_path = US_DIR / 'weekly_calendar.json'
+        calendar_path = US_DIR / "weekly_calendar.json"
         if calendar_path.exists():
             return jsonify(load_json_file(calendar_path, {}))
-        return jsonify({'events': []})
+        return jsonify({"events": []})
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return jsonify({"error": str(e)}), 500
 
 
-@app.route('/api/us/technical-indicators/<ticker>')
+@app.route("/api/us/technical-indicators/<ticker>")
 def get_technical_indicators(ticker):
     try:
         from ta.momentum import RSIIndicator
@@ -1965,31 +2477,39 @@ def get_technical_indicators(ticker):
         to_date = end_date.isoformat()
         fmp = get_fmp_client()
         fmp_symbol = to_fmp_symbol(ticker)
-        data = fmp.historical_price_full(fmp_symbol, from_date=from_date, to_date=to_date)
+        data = fmp.historical_price_full(
+            fmp_symbol, from_date=from_date, to_date=to_date
+        )
         get_perf_stats()["fmp_calls"] += 1
         hist_list = data.get("historical", []) if isinstance(data, dict) else []
         if not hist_list:
-            return jsonify({'error': 'No data'}), 404
+            return jsonify({"error": "No data"}), 404
 
         hist = pd.DataFrame(hist_list)
-        hist['Date'] = pd.to_datetime(hist['date'])
-        hist = hist.sort_values('Date')
-        hist = hist.rename(columns={
-            'open': 'Open',
-            'high': 'High',
-            'low': 'Low',
-            'close': 'Close',
-            'volume': 'Volume'
-        })
+        hist["Date"] = pd.to_datetime(hist["date"])
+        hist = hist.sort_values("Date")
+        hist = hist.rename(
+            columns={
+                "open": "Open",
+                "high": "High",
+                "low": "Low",
+                "close": "Close",
+                "volume": "Volume",
+            }
+        )
 
-        close = hist['Close']
+        close = hist["Close"]
 
         rsi = RSIIndicator(close).rsi()
         macd_calc = MACD(close)
         bb = BollingerBands(close)
 
         def series_to_points(series):
-            return [{'time': int(t.timestamp()), 'value': round(v, 2)} for t, v in zip(hist['Date'], series) if pd.notna(v)]
+            return [
+                {"time": int(t.timestamp()), "value": round(v, 2)}
+                for t, v in zip(hist["Date"], series)
+                if pd.notna(v)
+            ]
 
         supports = []
         resistances = []
@@ -2003,34 +2523,34 @@ def get_technical_indicators(ticker):
         except Exception:
             pass
 
-        return jsonify({
-            'ticker': ticker,
-            'rsi': series_to_points(rsi),
-            'macd': {
-                'line': series_to_points(macd_calc.macd()),
-                'signal': series_to_points(macd_calc.macd_signal()),
-                'hist': series_to_points(macd_calc.macd_diff())
-            },
-            'bollinger': {
-                'upper': series_to_points(bb.bollinger_hband()),
-                'middle': series_to_points(bb.bollinger_mavg()),
-                'lower': series_to_points(bb.bollinger_lband())
-            },
-            'support_resistance': {
-                'support': supports,
-                'resistance': resistances
+        return jsonify(
+            {
+                "ticker": ticker,
+                "rsi": series_to_points(rsi),
+                "macd": {
+                    "line": series_to_points(macd_calc.macd()),
+                    "signal": series_to_points(macd_calc.macd_signal()),
+                    "hist": series_to_points(macd_calc.macd_diff()),
+                },
+                "bollinger": {
+                    "upper": series_to_points(bb.bollinger_hband()),
+                    "middle": series_to_points(bb.bollinger_mavg()),
+                    "lower": series_to_points(bb.bollinger_lband()),
+                },
+                "support_resistance": {"support": supports, "resistance": resistances},
             }
-        })
+        )
     except Exception as e:
         logger.error(f"Technical indicator error: {e}")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({"error": str(e)}), 500
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     # Auto-run smart update in background on server startup
     def run_smart_update_background():
         """Run smart_update.py in background thread on startup."""
         import time
+
         time.sleep(2)  # Wait for server to fully start
         try:
             smart_update_path = BASE_DIR / "us_market" / "smart_update.py"
@@ -2041,20 +2561,24 @@ if __name__ == '__main__':
                     cwd=str(BASE_DIR / "us_market"),
                     capture_output=True,
                     text=True,
-                    env={**os.environ, 'PYTHONIOENCODING': 'utf-8'}
+                    encoding="utf-8",
+                    errors="replace",
+                    env={**os.environ, "PYTHONIOENCODING": "utf-8"},
                 )
                 if result.returncode == 0:
                     logger.info("✅ Background smart update completed")
                 else:
-                    logger.warning(f"⚠️ Smart update had issues: {result.stderr[:200] if result.stderr else 'unknown'}")
+                    logger.warning(
+                        f"⚠️ Smart update had issues: {result.stderr[:200] if result.stderr else 'unknown'}"
+                    )
             else:
                 logger.info("ℹ️ smart_update.py not found, skipping auto-update")
         except Exception as e:
             logger.error(f"❌ Background smart update failed: {e}")
-    
+
     # Start background update thread (non-blocking)
     update_thread = threading.Thread(target=run_smart_update_background, daemon=True)
     update_thread.start()
-    
-    print('Flask Server Starting on port 5001...')
+
+    print("Flask Server Starting on port 5001...")
     app.run(port=5001, debug=True, use_reloader=False)
